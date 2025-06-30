@@ -1,4 +1,7 @@
-use std::{iter, sync::{Arc, Condvar, Mutex}};
+use std::{
+    iter,
+    sync::{Arc, Condvar, Mutex},
+};
 
 use crate::{
     body::{Body, BodyId},
@@ -33,6 +36,7 @@ struct App {
     lagging: bool,
     stats_open: bool,
     selected: Option<BodyId>,
+    show_future: f64,
 }
 
 struct ThreadState {
@@ -59,13 +63,13 @@ impl App {
             BodyId::next_id(),
             Body {
                 pos: Vector2 { x: -5.0, y: 0.0 },
-                vel: Vector2 { x: 0.0, y: 0.5 },
+                vel: Vector2 { x: -0.4, y: 0.5 },
                 radius: 1.0,
                 density: 1.0,
                 color: Vector3 {
                     x: 1.0,
-                    y: 1.0,
-                    z: 1.0,
+                    y: 0.0,
+                    z: 0.0,
                 },
             },
         );
@@ -73,18 +77,32 @@ impl App {
             BodyId::next_id(),
             Body {
                 pos: Vector2 { x: 5.0, y: 0.0 },
-                vel: Vector2 { x: 0.0, y: -0.5 },
+                vel: Vector2 { x: -0.8, y: 0.5 },
                 radius: 1.0,
                 density: 1.0,
                 color: Vector3 {
-                    x: 1.0,
+                    x: 0.0,
                     y: 1.0,
+                    z: 0.0,
+                },
+            },
+        );
+        inital_universe.bodies.insert(
+            BodyId::next_id(),
+            Body {
+                pos: Vector2 { x: 0.0, y: 5.0 },
+                vel: Vector2 { x: 0.8, y: 0.5 },
+                radius: 1.3,
+                density: 1.0,
+                color: Vector3 {
+                    x: 0.0,
+                    y: 0.0,
                     z: 1.0,
                 },
             },
         );
 
-        let gen_future = 2000;
+        let gen_future = 20000;
         let step_size = 1.0 / 128.0;
         let thread_state = Arc::new(ThreadState {
             generation_state: Mutex::new(GenerationState {
@@ -153,6 +171,7 @@ impl App {
             lagging: false,
             stats_open: true,
             selected: None,
+            show_future: 100.0,
         })
     }
 }
@@ -174,11 +193,17 @@ impl eframe::App for App {
                 ui.add(egui::DragValue::new(&mut self.current_state));
                 ui.label(format!(" /  {}", self.states.len()));
             });
+            let default_slider_width = ui.spacing_mut().slider_width;
             ui.spacing_mut().slider_width = ui.available_width();
             ui.add(egui::Slider::new(
                 &mut self.current_state,
                 0..=self.states.len() - 1,
             ));
+            ui.spacing_mut().slider_width = default_slider_width;
+            ui.horizontal(|ui| {
+                ui.label("Show Future");
+                ui.add(egui::Slider::new(&mut self.show_future, 0.0..=750.0));
+            });
             ui.horizontal(|ui| {
                 ui.label("Speed: ");
                 ui.add(egui::DragValue::new(&mut self.speed).speed(0.1));
@@ -270,13 +295,13 @@ impl eframe::App for App {
                 self.states.truncate(self.current_state + 1);
                 lock.states_buffer_size = self
                     .gen_future
-                    .saturating_sub(self.states.len() - self.current_state);
+                    .saturating_sub((self.states.len()) - self.current_state);
                 lock.initial_state = Some(self.states.last().unwrap().clone());
             } else {
                 self.states.append(&mut lock.new_states);
                 lock.states_buffer_size = self
                     .gen_future
-                    .saturating_sub(self.states.len() - self.current_state);
+                    .saturating_sub((self.states.len()) - self.current_state);
             }
             self.thread_state.wakeup.notify_one();
         }
@@ -314,19 +339,22 @@ impl eframe::App for App {
 
                 if response.clicked_by(egui::PointerButton::Secondary) {
                     let mut clicked_on_body = false;
-                    self.states[self.current_state].bodies.iter().for_each(|(key, body)| {
-                        let mouse_to_body = body.pos - world_mouse_pos;
-                        if mouse_to_body.magnitude() < body.radius {
-                            if let Some(_selected) = self.selected {
-                                self.camera.pos -= self.camera.offset
+                    self.states[self.current_state]
+                        .bodies
+                        .iter()
+                        .for_each(|(key, body)| {
+                            let mouse_to_body = body.pos - world_mouse_pos;
+                            if mouse_to_body.magnitude() < body.radius {
+                                if let Some(_selected) = self.selected {
+                                    self.camera.pos -= self.camera.offset
+                                }
+                                self.selected = Some(key);
+                                self.camera.pos -= body.pos;
+                                self.camera.offset = -body.pos;
+                                clicked_on_body = true
                             }
-                            self.selected = Some(key);
-                            self.camera.pos -= body.pos;
-                            self.camera.offset = -body.pos;
-                            clicked_on_body = true
-                        }
-                    });
-                    self.selected = if !clicked_on_body && let Some(selected) = self.selected {
+                        });
+                    self.selected = if !clicked_on_body && let Some(_) = self.selected {
                         self.camera.pos -= self.camera.offset;
                         self.camera.offset = Vector2::zero();
                         None
@@ -337,9 +365,66 @@ impl eframe::App for App {
 
                 let mut d = DrawHandler::new();
 
-                d.circle(world_mouse_pos.cast().unwrap(), 1.0, Vector3::unit_x(), 1.0);
-
                 self.states[self.current_state].draw(&mut d);
+                d.quads.reserve(
+                    ((self.show_future / self.step_size) as usize).min(self.states.len() - 2)
+                        * self.states[self.current_state].bodies.len(),
+                );
+                for i in 0..(self.show_future / self.step_size) as usize {
+                    let i = i + self.current_state;
+                    if i + 2 > self.states.len() {
+                        break;
+                    }
+                    let universe = &self.states[i];
+                    let new_universe = &self.states[i + 1];
+                    universe.bodies.iter().for_each(|(id, _)| {
+                        let Some(current) = universe.bodies.get(id) else {
+                            return;
+                        };
+                        let Some(future) = new_universe.bodies.get(id) else {
+                            return;
+                        };
+                        let current_offset = if let Some(selected) = self.selected {
+                            if let Some(body) = universe.bodies.get(selected) {
+                                body.pos + self.camera.offset
+                            } else {
+                                self.camera.offset
+                            }
+                        } else {
+                            self.camera.offset
+                        };
+                        let future_offset = if let Some(selected) = self.selected {
+                            if let Some(body) = new_universe.bodies.get(selected) {
+                                body.pos + self.camera.offset
+                            } else {
+                                self.camera.offset
+                            }
+                        } else {
+                            self.camera.offset
+                        };
+
+                        d.line(
+                            (current.pos - current_offset).cast().unwrap(),
+                            (future.pos - future_offset).cast().unwrap(),
+                            0.005 * self.camera.view_height as f32,
+                            current.color.cast().unwrap(),
+                            0.1,
+                        );
+
+                        if i + 3 > self.states.len() {
+                            d.circle(
+                                (future.pos - future_offset).cast().unwrap(),
+                                0.005 * self.camera.view_height as f32,
+                                Vector3 {
+                                    x: 0.25,
+                                    y: 0.25,
+                                    z: 0.25,
+                                },
+                                0.2,
+                            );
+                        }
+                    });
+                }
 
                 ui.painter()
                     .add(eframe::egui_wgpu::Callback::new_paint_callback(
