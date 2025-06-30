@@ -1,7 +1,4 @@
-use std::{
-    iter,
-    sync::{Arc, Condvar, Mutex},
-};
+use std::sync::{Arc, Condvar, Mutex};
 
 use crate::{
     body::{Body, BodyId},
@@ -12,7 +9,7 @@ use crate::{
 };
 use cgmath::{InnerSpace, Vector2, Vector3, Zero};
 use eframe::{
-    egui::{self, response},
+    egui::{self},
     wgpu,
 };
 
@@ -37,6 +34,7 @@ struct App {
     stats_open: bool,
     selected: Option<BodyId>,
     show_future: f64,
+    path_quality: usize,
 }
 
 struct ThreadState {
@@ -103,7 +101,7 @@ impl App {
         );
 
         let gen_future = 20000;
-        let step_size = 1.0 / 128.0;
+        let step_size = 1.0 / 512.0;
         let thread_state = Arc::new(ThreadState {
             generation_state: Mutex::new(GenerationState {
                 initial_state: Some(inital_universe.clone()),
@@ -172,6 +170,7 @@ impl App {
             stats_open: true,
             selected: None,
             show_future: 100.0,
+            path_quality: 128,
         })
     }
 }
@@ -183,6 +182,7 @@ impl eframe::App for App {
         self.last_time = Some(time);
 
         let dt = dt.as_secs_f64();
+        let mut current_state_modified = false;
 
         egui::TopBottomPanel::top("Time").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -190,8 +190,17 @@ impl eframe::App for App {
             });
             ui.label("Time");
             ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut self.current_state));
-                ui.label(format!(" /  {}", self.states.len()));
+                let mut seconds = self.current_state as f64 * self.step_size;
+                if ui
+                    .add(egui::DragValue::new(&mut seconds).suffix("s").speed(1.0))
+                    .changed()
+                {
+                    self.current_state = (seconds / self.step_size) as usize;
+                }
+                ui.label(format!(
+                    " /  {:.2}s",
+                    self.states.len() as f64 * self.step_size
+                ));
             });
             let default_slider_width = ui.spacing_mut().slider_width;
             ui.spacing_mut().slider_width = ui.available_width();
@@ -201,8 +210,28 @@ impl eframe::App for App {
             ));
             ui.spacing_mut().slider_width = default_slider_width;
             ui.horizontal(|ui| {
-                ui.label("Show Future");
-                ui.add(egui::Slider::new(&mut self.show_future, 0.0..=750.0));
+                ui.label("Gen Future: ");
+                let mut seconds = self.gen_future as f64 * self.step_size;
+                if ui
+                    .add(egui::DragValue::new(&mut seconds).suffix("s").speed(1.0))
+                    .changed()
+                {
+                    self.gen_future = (seconds / self.step_size) as usize;
+                }
+            });
+            ui.spacing_mut().slider_width = ui.available_width() / 2.0;
+            ui.horizontal(|ui| {
+                ui.label("Show Future: ");
+                ui.add(
+                    egui::Slider::new(&mut self.show_future, 0.0..=10000.0)
+                        .suffix("s")
+                        .step_by(1.0),
+                );
+            });
+            ui.spacing_mut().slider_width = default_slider_width;
+            ui.horizontal(|ui| {
+                ui.label("Path Quality: ");
+                ui.add(egui::Slider::new(&mut self.path_quality, 1..=128));
             });
             ui.horizontal(|ui| {
                 ui.label("Speed: ");
@@ -231,7 +260,16 @@ impl eframe::App for App {
                 if ui.button("100x").clicked() {
                     self.speed = 100.0
                 }
+                self.speed = self.speed.max(0.0)
             });
+            if ui.button("Delete Past").clicked() {
+                self.states.drain(..self.current_state);
+                self.current_state = 0;
+                self.states.shrink_to_fit();
+            }
+            if ui.button("Delete Future").clicked() {
+                current_state_modified = true;
+            }
         });
 
         self.lagging = false;
@@ -287,12 +325,11 @@ impl eframe::App for App {
             });
         }
 
-        let current_state_modified = false;
-
         {
             let mut lock = self.thread_state.generation_state.lock().unwrap();
             if current_state_modified {
                 self.states.truncate(self.current_state + 1);
+                self.states.shrink_to_fit();
                 lock.states_buffer_size = self
                     .gen_future
                     .saturating_sub((self.states.len()) - self.current_state);
@@ -368,62 +405,70 @@ impl eframe::App for App {
                 self.states[self.current_state].draw(&mut d);
                 d.quads.reserve(
                     ((self.show_future / self.step_size) as usize).min(self.states.len() - 2)
-                        * self.states[self.current_state].bodies.len(),
+                        * self.states[self.current_state].bodies.len()
+                        / self.path_quality,
                 );
+                let mut old_index = self.current_state;
                 for i in 0..(self.show_future / self.step_size) as usize {
-                    let i = i + self.current_state;
-                    if i + 2 > self.states.len() {
-                        break;
-                    }
-                    let universe = &self.states[i];
-                    let new_universe = &self.states[i + 1];
-                    universe.bodies.iter().for_each(|(id, _)| {
-                        let Some(current) = universe.bodies.get(id) else {
-                            return;
-                        };
-                        let Some(future) = new_universe.bodies.get(id) else {
-                            return;
-                        };
-                        let current_offset = if let Some(selected) = self.selected {
-                            if let Some(body) = universe.bodies.get(selected) {
+                    let future_index = i + self.current_state;
+                    if future_index + 2 > self.states.len() {
+                        let universe = &self.states.last().unwrap();
+                        universe.bodies.iter().for_each(|(_, body)| {
+                            let offset = if let Some(selected) = self.selected
+                                && let Some(body) = universe.bodies.get(selected)
+                            {
                                 body.pos + self.camera.offset
                             } else {
                                 self.camera.offset
-                            }
-                        } else {
-                            self.camera.offset
-                        };
-                        let future_offset = if let Some(selected) = self.selected {
-                            if let Some(body) = new_universe.bodies.get(selected) {
-                                body.pos + self.camera.offset
-                            } else {
-                                self.camera.offset
-                            }
-                        } else {
-                            self.camera.offset
-                        };
-
-                        d.line(
-                            (current.pos - current_offset).cast().unwrap(),
-                            (future.pos - future_offset).cast().unwrap(),
-                            0.005 * self.camera.view_height as f32,
-                            current.color.cast().unwrap(),
-                            0.1,
-                        );
-
-                        if i + 3 > self.states.len() {
+                            };
                             d.circle(
-                                (future.pos - future_offset).cast().unwrap(),
+                                (body.pos - offset).cast().unwrap(),
                                 0.005 * self.camera.view_height as f32,
                                 Vector3 {
-                                    x: 0.25,
-                                    y: 0.25,
-                                    z: 0.25,
+                                    x: 0.75,
+                                    y: 0.75,
+                                    z: 0.75,
                                 },
                                 0.2,
                             );
-                        }
-                    });
+                        });
+                        break;
+                    }
+                    let universe = &self.states[old_index];
+                    let new_universe = &self.states[future_index + 1];
+                    if (i + self.current_state) % self.path_quality == 0 {
+                        universe.bodies.iter().for_each(|(id, _)| {
+                            let Some(current) = universe.bodies.get(id) else {
+                                return;
+                            };
+                            let Some(future) = new_universe.bodies.get(id) else {
+                                return;
+                            };
+                            let current_offset = if let Some(selected) = self.selected
+                                && let Some(body) = universe.bodies.get(selected)
+                            {
+                                body.pos + self.camera.offset
+                            } else {
+                                self.camera.offset
+                            };
+                            let future_offset = if let Some(selected) = self.selected
+                                && let Some(body) = new_universe.bodies.get(selected)
+                            {
+                                body.pos + self.camera.offset
+                            } else {
+                                self.camera.offset
+                            };
+
+                            d.line(
+                                (current.pos - current_offset).cast().unwrap(),
+                                (future.pos - future_offset).cast().unwrap(),
+                                0.005 * self.camera.view_height as f32,
+                                current.color.cast().unwrap(),
+                                0.1,
+                            );
+                        });
+                        old_index = future_index
+                    }
                 }
 
                 ui.painter()
@@ -456,6 +501,17 @@ fn main() -> eframe::Result<()> {
             depth_buffer: 24,
             wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
                 present_mode: wgpu::PresentMode::AutoNoVsync,
+                wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(
+                    eframe::egui_wgpu::WgpuSetupCreateNew {
+                        device_descriptor: Arc::new(|adapter| wgpu::DeviceDescriptor {
+                            label: Some("wgpu device"),
+                            required_features: wgpu::Features::default(),
+                            required_limits: adapter.limits(),
+                            memory_hints: wgpu::MemoryHints::default(),
+                        }),
+                        ..Default::default()
+                    },
+                ),
                 ..Default::default()
             },
             ..Default::default()

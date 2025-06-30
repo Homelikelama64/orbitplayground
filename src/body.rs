@@ -61,6 +61,10 @@ impl BodyList {
         }
     }
 
+    pub fn push(&mut self, body: Body) {
+        self.bodies.push((BodyId::next_id(), body));
+    }
+
     pub fn remove(&mut self, id: BodyId) -> Option<Body> {
         match self.bodies.binary_search_by_key(&id, |&(id, _)| id) {
             Ok(index) => Some(self.bodies.remove(index).1),
