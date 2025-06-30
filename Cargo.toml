@@ -8,3 +8,4 @@ anyhow = { version = "1.0.98", features = ["backtrace"] }
 cgmath = { version = "0.18.0", features = ["serde"] }
 eframe = { version = "0.31.1", features = ["persistence", "ron", "serde", "wgpu"] }
 encase = { version = "0.11.1", features = ["cgmath"] }
+slotmap = { version = "1.0.7", features = ["serde"] }

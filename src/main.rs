@@ -1,4 +1,4 @@
-use std::f64::consts::PI;
+use std::f64::consts::{PI, TAU};
 
 use crate::{
     drawing::DrawHandler,
@@ -9,6 +9,7 @@ use eframe::{
     egui::{self},
     wgpu,
 };
+use slotmap::{SlotMap, new_key_type};
 
 pub mod drawing;
 pub mod rendering;
@@ -20,7 +21,7 @@ struct App {
     look_ahead: f32,
     look_quality: usize,
     accumulated_time: f32,
-    selected: Option<usize>,
+    selected: Option<BodyId>,
     speed: f32,
     warp_to: f32,
 }
@@ -32,36 +33,78 @@ impl App {
         renderer.renderer.write().callback_resources.insert(state);
 
         let mut universe = Universe::new(1.0);
-        universe.bodies.push(Body::new(
-            Vector2 { x: 20.0, y: 0.0 },
-            Vector2 { x: 0.0, y: 5.0 },
-            1.2,
-            Vector3 {
-                x: 0.0,
-                y: 1.0,
-                z: 0.0,
-            },
-        ));
-        universe.bodies.push(Body::new(
-            Vector2 { x: 5.0, y: 0.0 },
-            Vector2 { x: 0.0, y: 0.0 },
-            10.0,
-            Vector3 {
-                x: 1.0,
-                y: 0.0,
-                z: 1.0,
-            },
-        ));
         //universe.bodies.push(Body::new(
-        //    Vector2 { x: 0.0, y: 4.0 },
-        //    Vector2 { x: 0.0, y: -0.5 },
-        //    1.3,
+        //    Vector2 { x: 5.0, y: 0.0 },
+        //    Vector2 { x: 0.0, y: 1.0 },
+        //    1.0,
+        //    Vector3 {
+        //        x: 0.0,
+        //        y: 1.0,
+        //        z: 0.0,
+        //    },
+        //));
+        //universe.bodies.push(Body::new(
+        //    Vector2 { x: 0.0, y: 0.0 },
+        //    Vector2 { x: 0.0, y: 0.0 },
+        //    1.0,
+        //    Vector3 {
+        //        x: 1.0,
+        //        y: 0.0,
+        //        z: 1.0,
+        //    },
+        //));
+        //universe.bodies.push(Body::new(
+        //    Vector2 { x: -5.0, y: 0.0 },
+        //    Vector2 { x: 0.0, y: -1.0 },
+        //    1.001,
         //    Vector3 {
         //        x: 1.0,
         //        y: 1.0,
         //        z: 0.0,
         //    },
         //));
+
+        //universe.bodies.push(Body::new(
+        //    Vector2 { x: -5.0, y: 0.0 },
+        //    Vector2 { x: 0.0, y: 0.0 },
+        //    1.0,
+        //    Vector3 {
+        //        x: 1.0,
+        //        y: 1.0,
+        //        z: 1.0,
+        //    },
+        //));
+        //universe.bodies.push(Body::new(
+        //    Vector2 { x: 5.0, y: 0.0 },
+        //    Vector2 { x: 0.0, y: 0.0 },
+        //    1.0,
+        //    Vector3 {
+        //        x: 1.0,
+        //        y: 1.0,
+        //        z: 1.0,
+        //    },
+        //));
+
+        universe.bodies.insert(Body::new(
+            Vector2 { x: 0.0, y: 0.0 },
+            Vector2 { x: 0.0, y: 0.0 },
+            5.0,
+            Vector3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+        ));
+        universe.bodies.insert(Body::new(
+            Vector2 { x: 20.0, y: 0.0 },
+            Vector2 { x: 0.0, y: 0.1 },
+            1.0,
+            Vector3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+        ));
 
         Ok(Self {
             camera: Camera {
@@ -72,7 +115,7 @@ impl App {
                 height: 0.0,
             },
             universe,
-            look_ahead: 20.0,
+            look_ahead: 0.0,
             look_quality: 8,
             last_time: None,
             accumulated_time: 0.0,
@@ -117,19 +160,23 @@ impl Camera {
 
 #[derive(Debug, Clone)]
 struct Universe {
-    bodies: Vec<Body>,
+    bodies: SlotMap<BodyId, Body>,
     gravity: f32,
     step_time: f32,
     time: f32,
+    removing: Vec<BodyId>,
+    adding: Vec<Body>,
 }
 
 impl Universe {
     fn new(gravity: f32) -> Self {
         Universe {
-            bodies: vec![],
+            bodies: SlotMap::<BodyId, Body>::with_key(),
             gravity,
             time: 0.0,
             step_time: 1.0 / 128.0,
+            removing: vec![],
+            adding: vec![],
         }
     }
     fn update(&mut self, time: &mut f32) {
@@ -141,36 +188,119 @@ impl Universe {
     fn step(&self, dt: f32) -> Self {
         let mut universe = self.clone();
         universe.time += dt;
-        for i in 0..universe.bodies.len() {
-            for j in i + 1..universe.bodies.len() {
+        universe.remove_queued();
+        universe.add_bodies();
+        let keys = universe.bodies.keys().collect::<Vec<_>>();
+        for (index, &i) in keys.iter().enumerate() {
+            universe.bodies[i].last_vel = universe.bodies[i].vel;
+            for j in index + 1..universe.bodies.len() {
+                let j = keys[j];
                 let [a, b] = universe.bodies.get_disjoint_mut([i, j]).unwrap();
                 let a_to_b = b.pos - a.pos;
-                a.acc += a_to_b.normalize() * universe.gravity as f64 * b.mass / a_to_b.magnitude2() * dt as f64;
-                b.acc -= a_to_b.normalize() * universe.gravity as f64 * a.mass / a_to_b.magnitude2() * dt as f64;
+                let dist_sqr = a_to_b.magnitude2();
+                let dist = dist_sqr.sqrt();
+                a.vel += a_to_b.normalize() * universe.gravity as f64 * b.mass
+                    / a_to_b.magnitude2()
+                    * dt as f64;
+                b.vel -= a_to_b.normalize() * universe.gravity as f64 * a.mass
+                    / a_to_b.magnitude2()
+                    * dt as f64;
+                let distance_edge = dist - a.radius as f64 - b.radius as f64;
+                if distance_edge < 0.0 {
+                    let new_a_vel = a.vel
+                        - -a_to_b
+                            * ((2.0 * b.mass) / (a.mass + b.mass))
+                            * ((a.vel - b.vel).dot(-a_to_b) / dist_sqr);
+                    let new_b_vel = b.vel
+                        - a_to_b
+                            * ((2.0 * a.mass) / (a.mass + b.mass))
+                            * ((b.vel - a.vel).dot(a_to_b) / dist_sqr);
+
+                    let a_collision_acc = a.vel - new_a_vel;
+                    let b_collision_acc = b.vel - new_b_vel;
+                    let a_collision_force = 0.5 * a.mass * a_collision_acc.magnitude2();
+                    let b_collision_force = 0.5 * b.mass * b_collision_acc.magnitude2();
+                    if a_collision_force > a.gravitational_binding_energy(universe.gravity) {
+                        dbg!(a_collision_force);
+                        dbg!(a.gravitational_binding_energy(universe.gravity));
+                        println!("A broke Apart");
+                        universe.break_body(i);
+                    }
+                    let b = &mut universe.bodies[j];
+                    if b_collision_force > b.gravitational_binding_energy(universe.gravity) {
+                        dbg!(b_collision_force);
+                        dbg!(b.gravitational_binding_energy(universe.gravity));
+                        universe.break_body(j);
+                    }
+                    let [a, b] = universe.bodies.get_disjoint_mut([i, j]).unwrap();
+
+                    a.vel = new_a_vel;
+                    b.vel = new_b_vel;
+
+                    a.pos -=
+                        (a_to_b.normalize() * -distance_edge) * (2.0 * a.mass) / (a.mass + b.mass);
+                    b.pos +=
+                        (a_to_b.normalize() * -distance_edge) * (2.0 * b.mass) / (a.mass + b.mass);
+                }
             }
 
             let body = &mut universe.bodies[i];
-            body.vel += body.acc;
-            body.acc = Vector2::zero();
 
             body.pos += body.vel * dt as f64;
         }
         universe
     }
+    fn remove_queued(&mut self) {
+        self.removing.sort_by_key(|&x| core::cmp::Reverse(x));
+        for i in self.removing.drain(..) {
+            self.bodies.remove(i);
+        }
+    }
+    fn add_bodies(&mut self) {
+        for new in &self.adding {
+            self.bodies.insert(*new);
+        }
+        self.adding.clear();
+    }
     fn draw(&self, d: &mut DrawHandler) {
         d.circles.reserve(self.bodies.len());
-        for body in &self.bodies {
+        for (key, body) in &self.bodies {
             d.circle(body.pos.cast().unwrap(), body.radius, body.color, 0.0);
         }
     }
     fn get_center_of_mass(&self) -> Vector2<f64> {
         let mut total_mass = 0.0;
         let mut total_position = Vector2::zero();
-        for body in &self.bodies {
+        for (key, body) in &self.bodies {
             total_mass += body.mass;
             total_position += body.pos * body.mass;
         }
         total_position / total_mass
+    }
+    fn break_body(&mut self, id: BodyId) {
+        let body = &self.bodies[id];
+        if body.radius < 0.3 {
+            self.removing.push(id);
+            return;
+        }
+
+        let radius = body.radius / 3.0;
+        for i in 0..5 {
+            let angle = (TAU / 6.0) * i as f64;
+            let dir = Vector2 {
+                x: angle.sin(),
+                y: angle.cos(),
+            };
+            self.adding.push(Body::new(
+                body.pos + dir * (body.radius - radius) as f64,
+                body.vel * 1.0,
+                radius,
+                body.color,
+            ));
+        }
+        self.adding
+            .push(Body::new(body.pos, body.vel * 1.0, radius, body.color));
+        self.removing.push(id);
     }
 }
 
@@ -178,10 +308,14 @@ impl Universe {
 struct Body {
     pos: Vector2<f64>,
     vel: Vector2<f64>,
-    acc: Vector2<f64>,
+    last_vel: Vector2<f64>,
     radius: f32,
     mass: f64,
     color: Vector3<f32>,
+}
+
+new_key_type! {
+    struct BodyId;
 }
 
 impl Body {
@@ -189,11 +323,18 @@ impl Body {
         Body {
             pos,
             vel,
-            acc: Vector2::zero(),
+            last_vel: vel,
             radius,
             mass: radius as f64 * radius as f64 * PI,
             color,
         }
+    }
+    fn acc(&self) -> Vector2<f64> {
+        self.vel - self.last_vel
+    }
+    fn gravitational_binding_energy(&self, gravity: f32) -> f64 {
+        // https://physics.stackexchange.com/questions/216377/gravitational-binding-energy-of-2d-circle
+        (2.0 * gravity as f64 * self.mass.powi(2)) / (3.0 * self.radius as f64)
     }
 }
 
@@ -205,9 +346,16 @@ impl eframe::App for App {
 
         let dt = dt.as_secs_f32();
 
+        let universe_center_of_mass = self.universe.get_center_of_mass();
         egui::Window::new("Stats").resizable(false).show(ctx, |ui| {
             ui.label(format!("Frame Time: {:.3}ms", 1000.0 * dt));
             ui.label(format!("FPS: {:.3}", 1.0 / dt));
+            ui.label(format!(
+                "Center: x:{:.2}, y:{:.2}, ({:.2})",
+                universe_center_of_mass.x,
+                universe_center_of_mass.y,
+                universe_center_of_mass.magnitude()
+            ));
         });
 
         egui::Window::new("Physics")
@@ -286,15 +434,14 @@ impl eframe::App for App {
                 self.camera.view_height = self.camera.view_height.max(0.1);
             });
         }
-        let warp_time = clamp(self.warp_to - self.universe.time, 0.0, 1.0);
+        let warp_time = clamp(self.warp_to - self.universe.time, 0.0, 5.0);
 
         self.accumulated_time += dt * self.speed + warp_time;
         self.universe.update(&mut self.accumulated_time);
 
         let universe_center_of_mass = self.universe.get_center_of_mass();
-        if universe_center_of_mass.magnitude() > 1000.0 {
-            println!("Moved");
-            for body in &mut self.universe.bodies {
+        if universe_center_of_mass.magnitude() > 100.0 {
+            for (_, body) in &mut self.universe.bodies {
                 body.pos -= universe_center_of_mass;
             }
             if self.selected.is_none() {
@@ -329,14 +476,14 @@ impl eframe::App for App {
 
                 if response.clicked_by(egui::PointerButton::Secondary) {
                     let mut clicked_on_body = false;
-                    for i in 0..self.universe.bodies.len() {
-                        let body = self.universe.bodies[i];
+                    for (key, body) in &self.universe.bodies {
                         let body_to_mouse = world_mouse_pos - body.pos.cast().unwrap();
                         if body_to_mouse.magnitude() < body.radius {
                             if let Some(selected) = self.selected {
-                                self.camera.pos += self.universe.bodies[selected].pos.cast().unwrap()
+                                self.camera.pos +=
+                                    self.universe.bodies[selected].pos.cast().unwrap()
                             }
-                            self.selected = Some(i);
+                            self.selected = Some(key);
                             self.camera.pos -= body.pos.cast().unwrap();
                             self.camera.offset = body.pos.cast().unwrap();
                             clicked_on_body = true;
@@ -352,31 +499,42 @@ impl eframe::App for App {
                 }
 
                 let mut d = DrawHandler::new();
-                d.circle(universe_center_of_mass.cast().unwrap(), 1.0, Vector3 { x: 0.25, y: 0.25, z: 0.25 }, 0.0);
+                d.circle(
+                    universe_center_of_mass.cast().unwrap(),
+                    1.0,
+                    Vector3 {
+                        x: 0.25,
+                        y: 0.25,
+                        z: 0.25,
+                    },
+                    0.0,
+                );
 
                 self.universe.draw(&mut d);
-
 
                 let mut old_future = self.universe.clone();
                 let mut future = old_future.step(self.universe.step_time);
                 d.quads.reserve(
                     (self.look_ahead / self.universe.step_time) as usize * future.bodies.len(),
                 );
+                let mut will_time_warp = false;
                 for step in 0..(self.look_ahead / self.universe.step_time) as usize {
                     if step % self.look_quality == 0 {
-                        for i in 0..future.bodies.len() {
-                            let mut pos = future.bodies[i].pos;
-                            let mut old_pos = old_future.bodies[i].pos;
+                        for (key, body) in &future.bodies {
+                            let mut pos = body.pos;
+                            let mut old_pos = body.pos - body.vel * self.universe.step_time as f64 * self.look_quality as f64;
                             if let Some(selected) = self.selected {
-                                pos -= future.bodies[selected].pos - self.camera.offset.cast().unwrap();
-                                old_pos -= old_future.bodies[selected].pos - self.camera.offset.cast().unwrap();
+                                pos -= future.bodies[selected].pos
+                                    - self.camera.offset.cast().unwrap();
+                                old_pos -= old_future.bodies[selected].pos
+                                    - self.camera.offset.cast().unwrap();
                             }
 
                             d.line(
                                 old_pos.cast().unwrap(),
                                 pos.cast().unwrap(),
-                                0.001 * self.camera.view_height,
-                                future.bodies[i].color,
+                                0.002 * self.camera.view_height,
+                                future.bodies[key].color,
                                 0.1,
                             );
 
@@ -393,11 +551,15 @@ impl eframe::App for App {
                                     x: -(b * d_ * e - a * e * e) / (d_ * d_ + e * e),
                                     y: (b * d_ * d_ - a * d_ * e) / (d_ * d_ + e * e),
                                 };
-                                if (ba - projected).magnitude() <= 0.01 * self.camera.view_height as f64 {
+                                if (ba - projected).magnitude()
+                                    <= 0.01 * self.camera.view_height as f64
+                                {
                                     let length =
                                         (Vector2 { x: e, y: -d_ }).normalize().dot(projected);
-                                    if (length < ed.magnitude()) && length > 0.0 {
+                                    if (length < ed.magnitude()) && length > 0.0 && !will_time_warp
+                                    {
                                         self.warp_to = future.time;
+                                        will_time_warp = true
                                     }
                                 }
                             }
