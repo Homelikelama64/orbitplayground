@@ -10,6 +10,7 @@ use eframe::{
 
 pub mod drawing;
 pub mod rendering;
+pub mod body;
 
 struct App {
     camera: Camera,
@@ -37,15 +38,15 @@ impl App {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Camera {
-    pos: Vector2<f32>,
-    offset: Vector2<f32>,
-    view_height: f32,
-    width: f32,
-    height: f32,
+    pos: Vector2<f64>,
+    offset: Vector2<f64>,
+    view_height: f64,
+    width: f64,
+    height: f64,
 }
 
 impl Camera {
-    pub fn screen_to_world(&self, pos: Vector2<f32>) -> Vector2<f32> {
+    pub fn screen_to_world(&self, pos: Vector2<f64>) -> Vector2<f64> {
         Vector2 {
             x: (pos.x - self.width * 0.5) / self.width
                 * (self.view_height * (self.width / self.height))
@@ -56,7 +57,7 @@ impl Camera {
                 + self.offset.y,
         }
     }
-    pub fn world_to_screen(&self, pos: Vector2<f32>) -> Vector2<f32> {
+    pub fn world_to_screen(&self, pos: Vector2<f64>) -> Vector2<f64> {
         Vector2 {
             x: (pos.x - self.pos.x - self.offset.x)
                 * (self.width / (self.view_height * (self.width / self.height)))
@@ -73,7 +74,7 @@ impl eframe::App for App {
         let dt = time - self.last_time.unwrap_or(time);
         self.last_time = Some(time);
 
-        let dt = dt.as_secs_f32();
+        let dt = dt.as_secs_f64();
 
         egui::Window::new("Stats").resizable(false).show(ctx, |ui| {
             ui.label(format!("Frame Time: {:.3}ms", 1000.0 * dt));
@@ -83,19 +84,19 @@ impl eframe::App for App {
         if !ctx.wants_keyboard_input() {
             ctx.input(|i| {
                 let move_speed = 1.0;
-                self.camera.pos.y += i.key_down(egui::Key::W) as u8 as f32
+                self.camera.pos.y += i.key_down(egui::Key::W) as u8 as f64
                     * dt
                     * move_speed
                     * self.camera.view_height;
-                self.camera.pos.y -= i.key_down(egui::Key::S) as u8 as f32
+                self.camera.pos.y -= i.key_down(egui::Key::S) as u8 as f64
                     * dt
                     * move_speed
                     * self.camera.view_height;
-                self.camera.pos.x += i.key_down(egui::Key::D) as u8 as f32
+                self.camera.pos.x += i.key_down(egui::Key::D) as u8 as f64
                     * dt
                     * move_speed
                     * self.camera.view_height;
-                self.camera.pos.x -= i.key_down(egui::Key::A) as u8 as f32
+                self.camera.pos.x -= i.key_down(egui::Key::A) as u8 as f64
                     * dt
                     * move_speed
                     * self.camera.view_height;
@@ -103,7 +104,7 @@ impl eframe::App for App {
         }
         if !ctx.wants_pointer_input() {
             ctx.input(|i| {
-                self.camera.view_height -= i.raw_scroll_delta.y * self.camera.view_height * 0.005;
+                self.camera.view_height -= i.raw_scroll_delta.y as f64 * self.camera.view_height * 0.005;
                 self.camera.view_height = self.camera.view_height.max(0.1);
             });
         }
@@ -114,8 +115,8 @@ impl eframe::App for App {
                 let (rect, _response) =
                     ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
                 let aspect = rect.width() / rect.height();
-                self.camera.width = rect.width();
-                self.camera.height = rect.height();
+                self.camera.width = rect.width() as f64;
+                self.camera.height = rect.height() as f64;
 
                 let d = DrawHandler::new();
 
@@ -124,8 +125,8 @@ impl eframe::App for App {
                         rect,
                         RenderData {
                             camera: GpuCamera {
-                                position: self.camera.pos + self.camera.offset,
-                                vertical_height: self.camera.view_height,
+                                position: (self.camera.pos - self.camera.offset).cast().unwrap(),
+                                vertical_height: self.camera.view_height as f32,
                                 aspect,
                             },
                             quads: d.quads,
