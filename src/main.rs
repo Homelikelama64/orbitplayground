@@ -27,6 +27,11 @@ struct App {
     gen_future: usize,
     step_size: f64,
     thread_state: Arc<ThreadState>,
+    speed: f64,
+    playing: bool,
+    accumulated_time: f64,
+    lagging: bool,
+    stats_open: bool,
 }
 
 struct ThreadState {
@@ -141,6 +146,11 @@ impl App {
             gen_future,
             step_size,
             thread_state,
+            speed: 1.0,
+            playing: false,
+            accumulated_time: 0.0,
+            lagging: false,
+            stats_open: true,
         })
     }
 }
@@ -153,25 +163,73 @@ impl eframe::App for App {
 
         let dt = dt.as_secs_f64();
 
-        egui::Window::new("Stats").resizable(false).show(ctx, |ui| {
-            ui.label(format!("Frame Time: {:.3}ms", 1000.0 * dt));
-            ui.label(format!("FPS: {:.3}", 1.0 / dt));
-        });
-
         egui::TopBottomPanel::top("Time").show(ctx, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.label("Time");
-                ui.horizontal(|ui| {
-                    ui.add(egui::DragValue::new(&mut self.current_state));
-                    ui.label(format!(" /  {}", self.states.len()));
-                });
-                ui.spacing_mut().slider_width = ui.available_width();
-                ui.add(egui::Slider::new(
-                    &mut self.current_state,
-                    0..=self.states.len() - 1,
-                ));
+            ui.horizontal(|ui| {
+                self.stats_open |= ui.button("Stats").clicked();
+            });
+            ui.label("Time");
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut self.current_state));
+                ui.label(format!(" /  {}", self.states.len()));
+            });
+            ui.spacing_mut().slider_width = ui.available_width();
+            ui.add(egui::Slider::new(
+                &mut self.current_state,
+                0..=self.states.len() - 1,
+            ));
+            ui.horizontal(|ui| {
+                ui.label("Speed: ");
+                ui.add(egui::DragValue::new(&mut self.speed).speed(0.1));
+                if ui.button("Play / Pause").clicked() {
+                    self.playing = !self.playing
+                }
+                if ui.button("0.1x").clicked() {
+                    self.speed = 0.1
+                }
+                if ui.button("0.5x").clicked() {
+                    self.speed = 0.5
+                }
+                if ui.button("1x").clicked() {
+                    self.speed = 1.0
+                }
+                if ui.button("5x").clicked() {
+                    self.speed = 5.0
+                }
+                if ui.button("10x").clicked() {
+                    self.speed = 10.0
+                }
+                if ui.button("50x").clicked() {
+                    self.speed = 50.0
+                }
+                if ui.button("100x").clicked() {
+                    self.speed = 100.0
+                }
             });
         });
+
+        self.lagging = false;
+        self.accumulated_time += (dt * self.playing as u8 as f64 * self.speed).max(0.0);
+        while self.accumulated_time >= self.step_size {
+            if self.current_state + 1 < self.states.len() {
+                self.current_state += 1;
+            } else {
+                self.lagging = true;
+                self.accumulated_time = 0.0;
+                break;
+            }
+            self.accumulated_time -= self.step_size;
+        }
+
+        egui::Window::new("Stats")
+            .open(&mut self.stats_open)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(format!("Frame Time: {:.3}ms", 1000.0 * dt));
+                ui.label(format!("FPS: {:.3}", 1.0 / dt));
+                if self.lagging {
+                    ui.label("The game is lagging!");
+                }
+            });
 
         if !ctx.wants_keyboard_input() {
             ctx.input(|i| {
