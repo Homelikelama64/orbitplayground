@@ -1,4 +1,4 @@
-use std::sync::{Arc, Condvar, Mutex};
+use std::{iter, sync::{Arc, Condvar, Mutex}};
 
 use crate::{
     body::{Body, BodyId},
@@ -7,9 +7,9 @@ use crate::{
     rendering::{GpuCamera, RenderData, RenderState},
     universe::Universe,
 };
-use cgmath::{Vector2, Vector3};
+use cgmath::{InnerSpace, Vector2, Vector3, Zero};
 use eframe::{
-    egui::{self},
+    egui::{self, response},
     wgpu,
 };
 
@@ -32,6 +32,7 @@ struct App {
     accumulated_time: f64,
     lagging: bool,
     stats_open: bool,
+    selected: Option<BodyId>,
 }
 
 struct ThreadState {
@@ -83,7 +84,7 @@ impl App {
             },
         );
 
-        let gen_future = 100;
+        let gen_future = 2000;
         let step_size = 1.0 / 128.0;
         let thread_state = Arc::new(ThreadState {
             generation_state: Mutex::new(GenerationState {
@@ -151,6 +152,7 @@ impl App {
             accumulated_time: 0.0,
             lagging: false,
             stats_open: true,
+            selected: None,
         })
     }
 }
@@ -282,13 +284,60 @@ impl eframe::App for App {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(50, 50, 50)))
             .show(ctx, |ui| {
-                let (rect, _response) =
+                let (rect, response) =
                     ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
                 let aspect = rect.width() / rect.height();
                 self.camera.width = rect.width() as f64;
                 self.camera.height = rect.height() as f64;
 
+                if let Some(selected) = self.selected {
+                    self.camera.offset = -self.states[self.current_state]
+                        .bodies
+                        .get(selected)
+                        .unwrap()
+                        .pos
+                } else {
+                    self.camera.offset = Vector2::zero()
+                }
+                let mouse_pos = if let Some(hover_pos) = ui.ctx().pointer_hover_pos() {
+                    Vector2 {
+                        x: hover_pos.x - rect.left_top().x,
+                        y: hover_pos.y - rect.left_top().y,
+                    }
+                } else {
+                    Vector2::zero()
+                }
+                .cast()
+                .unwrap();
+
+                let world_mouse_pos = self.camera.screen_to_world(mouse_pos);
+
+                if response.clicked_by(egui::PointerButton::Secondary) {
+                    let mut clicked_on_body = false;
+                    self.states[self.current_state].bodies.iter().for_each(|(key, body)| {
+                        let mouse_to_body = body.pos - world_mouse_pos;
+                        if mouse_to_body.magnitude() < body.radius {
+                            if let Some(_selected) = self.selected {
+                                self.camera.pos -= self.camera.offset
+                            }
+                            self.selected = Some(key);
+                            self.camera.pos -= body.pos;
+                            self.camera.offset = -body.pos;
+                            clicked_on_body = true
+                        }
+                    });
+                    self.selected = if !clicked_on_body && let Some(selected) = self.selected {
+                        self.camera.pos -= self.camera.offset;
+                        self.camera.offset = Vector2::zero();
+                        None
+                    } else {
+                        self.selected
+                    }
+                }
+
                 let mut d = DrawHandler::new();
+
+                d.circle(world_mouse_pos.cast().unwrap(), 1.0, Vector3::unit_x(), 1.0);
 
                 self.states[self.current_state].draw(&mut d);
 
