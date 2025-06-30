@@ -1,20 +1,44 @@
+use std::sync::{Arc, Condvar, Mutex};
+
 use crate::{
+    body::{Body, BodyId},
+    camera::Camera,
     drawing::DrawHandler,
     rendering::{GpuCamera, RenderData, RenderState},
+    universe::Universe,
 };
-use cgmath::Vector2;
+use cgmath::{Vector2, Vector3};
 use eframe::{
     egui::{self},
     wgpu,
 };
 
+pub mod body;
+pub mod camera;
 pub mod drawing;
 pub mod rendering;
-pub mod body;
+pub mod universe;
 
 struct App {
     camera: Camera,
     last_time: Option<std::time::Instant>,
+    states: Vec<Universe>,
+    current_state: usize,
+    gen_future: usize,
+    step_size: f64,
+    thread_state: Arc<ThreadState>,
+}
+
+struct ThreadState {
+    generation_state: Mutex<GenerationState>,
+    wakeup: Condvar,
+}
+
+struct GenerationState {
+    initial_state: Option<Universe>,
+    new_states: Vec<Universe>,
+    states_buffer_size: usize,
+    step_size: f64,
 }
 
 impl App {
@@ -22,6 +46,86 @@ impl App {
         let renderer = cc.wgpu_render_state.as_ref().unwrap();
         let state = RenderState::new(renderer.target_format, &renderer.device, &renderer.queue)?;
         renderer.renderer.write().callback_resources.insert(state);
+
+        let mut inital_universe = Universe::new(1.0);
+
+        inital_universe.bodies.insert(
+            BodyId::next_id(),
+            Body {
+                pos: Vector2 { x: -5.0, y: 0.0 },
+                vel: Vector2 { x: 0.0, y: 0.5 },
+                radius: 1.0,
+                density: 1.0,
+                color: Vector3 {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+            },
+        );
+        inital_universe.bodies.insert(
+            BodyId::next_id(),
+            Body {
+                pos: Vector2 { x: 5.0, y: 0.0 },
+                vel: Vector2 { x: 0.0, y: -0.5 },
+                radius: 1.0,
+                density: 1.0,
+                color: Vector3 {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+            },
+        );
+
+        let gen_future = 100;
+        let step_size = 1.0 / 128.0;
+        let thread_state = Arc::new(ThreadState {
+            generation_state: Mutex::new(GenerationState {
+                initial_state: Some(inital_universe.clone()),
+                new_states: vec![],
+                states_buffer_size: gen_future,
+                step_size,
+            }),
+            wakeup: Condvar::new(),
+        });
+
+        std::thread::spawn({
+            let thread_state = thread_state.clone();
+            move || {
+                let mut state = None;
+                let mut lock = thread_state.generation_state.lock().unwrap();
+                loop {
+                    if let Some(initial_state) = lock.initial_state.take() {
+                        lock.new_states.clear();
+                        state = Some(initial_state);
+                    }
+
+                    if lock.new_states.len() >= lock.states_buffer_size {
+                        lock = thread_state.wakeup.wait(lock).unwrap();
+                        continue;
+                    }
+                    let step_size = lock.step_size;
+
+                    if let Some(old_state) = &state {
+                        drop(lock);
+
+                        let mut new_state = old_state.clone();
+                        new_state.step(step_size);
+
+                        lock = thread_state.generation_state.lock().unwrap();
+                        if lock.new_states.len() >= lock.states_buffer_size {
+                            lock = thread_state.wakeup.wait(lock).unwrap();
+                            continue;
+                        }
+                        lock.new_states.push(new_state.clone());
+                        state = Some(new_state);
+                    } else {
+                        lock = thread_state.wakeup.wait(lock).unwrap();
+                    }
+                }
+            }
+        });
 
         Ok(Self {
             camera: Camera {
@@ -32,39 +136,12 @@ impl App {
                 height: 0.0,
             },
             last_time: None,
+            states: vec![inital_universe],
+            current_state: 0,
+            gen_future,
+            step_size,
+            thread_state,
         })
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Camera {
-    pos: Vector2<f64>,
-    offset: Vector2<f64>,
-    view_height: f64,
-    width: f64,
-    height: f64,
-}
-
-impl Camera {
-    pub fn screen_to_world(&self, pos: Vector2<f64>) -> Vector2<f64> {
-        Vector2 {
-            x: (pos.x - self.width * 0.5) / self.width
-                * (self.view_height * (self.width / self.height))
-                + self.pos.x
-                + self.offset.x,
-            y: -(pos.y - self.height * 0.5) / self.height * self.view_height
-                + self.pos.y
-                + self.offset.y,
-        }
-    }
-    pub fn world_to_screen(&self, pos: Vector2<f64>) -> Vector2<f64> {
-        Vector2 {
-            x: (pos.x - self.pos.x - self.offset.x)
-                * (self.width / (self.view_height * (self.width / self.height)))
-                + self.width * 0.5,
-            y: (pos.y - self.pos.y - self.offset.y) * (self.height / self.view_height)
-                + self.height * 0.5,
-        }
     }
 }
 
@@ -79,6 +156,21 @@ impl eframe::App for App {
         egui::Window::new("Stats").resizable(false).show(ctx, |ui| {
             ui.label(format!("Frame Time: {:.3}ms", 1000.0 * dt));
             ui.label(format!("FPS: {:.3}", 1.0 / dt));
+        });
+
+        egui::TopBottomPanel::top("Time").show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.label("Time");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut self.current_state));
+                    ui.label(format!(" /  {}", self.states.len()));
+                });
+                ui.spacing_mut().slider_width = ui.available_width();
+                ui.add(egui::Slider::new(
+                    &mut self.current_state,
+                    0..=self.states.len() - 1,
+                ));
+            });
         });
 
         if !ctx.wants_keyboard_input() {
@@ -104,9 +196,29 @@ impl eframe::App for App {
         }
         if !ctx.wants_pointer_input() {
             ctx.input(|i| {
-                self.camera.view_height -= i.raw_scroll_delta.y as f64 * self.camera.view_height * 0.005;
+                self.camera.view_height -=
+                    i.raw_scroll_delta.y as f64 * self.camera.view_height * 0.005;
                 self.camera.view_height = self.camera.view_height.max(0.1);
             });
+        }
+
+        let current_state_modified = false;
+
+        {
+            let mut lock = self.thread_state.generation_state.lock().unwrap();
+            if current_state_modified {
+                self.states.truncate(self.current_state + 1);
+                lock.states_buffer_size = self
+                    .gen_future
+                    .saturating_sub(self.states.len() - self.current_state);
+                lock.initial_state = Some(self.states.last().unwrap().clone());
+            } else {
+                self.states.append(&mut lock.new_states);
+                lock.states_buffer_size = self
+                    .gen_future
+                    .saturating_sub(self.states.len() - self.current_state);
+            }
+            self.thread_state.wakeup.notify_one();
         }
 
         egui::CentralPanel::default()
@@ -118,7 +230,9 @@ impl eframe::App for App {
                 self.camera.width = rect.width() as f64;
                 self.camera.height = rect.height() as f64;
 
-                let d = DrawHandler::new();
+                let mut d = DrawHandler::new();
+
+                self.states[self.current_state].draw(&mut d);
 
                 ui.painter()
                     .add(eframe::egui_wgpu::Callback::new_paint_callback(

@@ -1,6 +1,7 @@
 use cgmath::*;
 use std::{f64::consts::PI, num::NonZeroUsize};
 
+#[derive(Debug, Clone)]
 pub struct Body {
     pub pos: Vector2<f64>,
     pub vel: Vector2<f64>,
@@ -31,6 +32,7 @@ impl BodyId {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct BodyList {
     bodies: Vec<(BodyId, Body)>,
 }
@@ -38,6 +40,14 @@ pub struct BodyList {
 impl BodyList {
     pub fn new() -> Self {
         Self { bodies: vec![] }
+    }
+
+    pub fn len(&self) -> usize {
+        self.bodies.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn reserve(&mut self, additional: usize) {
