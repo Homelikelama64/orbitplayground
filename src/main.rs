@@ -1,10 +1,10 @@
-use std::f32::consts::PI;
+use std::f64::consts::PI;
 
 use crate::{
     drawing::DrawHandler,
     rendering::{GpuCamera, RenderData, RenderState},
 };
-use cgmath::{Vector2, Vector3, prelude::*};
+use cgmath::{Vector2, Vector3, num_traits::clamp, prelude::*};
 use eframe::{
     egui::{self},
     wgpu,
@@ -22,6 +22,7 @@ struct App {
     accumulated_time: f32,
     selected: Option<usize>,
     speed: f32,
+    warp_to: f32,
 }
 
 impl App {
@@ -32,8 +33,8 @@ impl App {
 
         let mut universe = Universe::new(1.0);
         universe.bodies.push(Body::new(
-            Vector2 { x: -5.0, y: 0.0 },
-            Vector2 { x: 0.0, y: 1.0 },
+            Vector2 { x: 20.0, y: 0.0 },
+            Vector2 { x: 0.0, y: 5.0 },
             1.2,
             Vector3 {
                 x: 0.0,
@@ -43,24 +44,24 @@ impl App {
         ));
         universe.bodies.push(Body::new(
             Vector2 { x: 5.0, y: 0.0 },
-            Vector2 { x: 0.0, y: -1.61 },
-            1.1,
+            Vector2 { x: 0.0, y: 0.0 },
+            10.0,
             Vector3 {
                 x: 1.0,
                 y: 0.0,
                 z: 1.0,
             },
         ));
-        universe.bodies.push(Body::new(
-            Vector2 { x: 0.0, y: 4.0 },
-            Vector2 { x: 0.0, y: -0.5 },
-            1.3,
-            Vector3 {
-                x: 1.0,
-                y: 1.0,
-                z: 0.0,
-            },
-        ));
+        //universe.bodies.push(Body::new(
+        //    Vector2 { x: 0.0, y: 4.0 },
+        //    Vector2 { x: 0.0, y: -0.5 },
+        //    1.3,
+        //    Vector3 {
+        //        x: 1.0,
+        //        y: 1.0,
+        //        z: 0.0,
+        //    },
+        //));
 
         Ok(Self {
             camera: Camera {
@@ -77,6 +78,7 @@ impl App {
             accumulated_time: 0.0,
             selected: None,
             speed: 1.0,
+            warp_to: 0.0,
         })
     }
 }
@@ -104,10 +106,11 @@ impl Camera {
     }
     pub fn world_to_screen(&self, pos: Vector2<f32>) -> Vector2<f32> {
         Vector2 {
-            x: (pos.x - self.pos.x)
+            x: (pos.x - self.pos.x - self.offset.x)
                 * (self.width / (self.view_height * (self.width / self.height)))
                 + self.width * 0.5,
-            y: (pos.y - self.pos.y) * (self.height / self.view_height) + self.height * 0.5,
+            y: (pos.y - self.pos.y - self.offset.y) * (self.height / self.view_height)
+                + self.height * 0.5,
         }
     }
 }
@@ -126,7 +129,7 @@ impl Universe {
             bodies: vec![],
             gravity,
             time: 0.0,
-            step_time: 0.01,
+            step_time: 1.0 / 128.0,
         }
     }
     fn update(&mut self, time: &mut f32) {
@@ -142,44 +145,53 @@ impl Universe {
             for j in i + 1..universe.bodies.len() {
                 let [a, b] = universe.bodies.get_disjoint_mut([i, j]).unwrap();
                 let a_to_b = b.pos - a.pos;
-                a.acc += a_to_b.normalize() * universe.gravity * b.mass / a_to_b.magnitude2() * dt;
-                b.acc -= a_to_b.normalize() * universe.gravity * a.mass / a_to_b.magnitude2() * dt;
+                a.acc += a_to_b.normalize() * universe.gravity as f64 * b.mass / a_to_b.magnitude2() * dt as f64;
+                b.acc -= a_to_b.normalize() * universe.gravity as f64 * a.mass / a_to_b.magnitude2() * dt as f64;
             }
 
             let body = &mut universe.bodies[i];
             body.vel += body.acc;
             body.acc = Vector2::zero();
 
-            body.pos += body.vel * dt;
+            body.pos += body.vel * dt as f64;
         }
         universe
     }
     fn draw(&self, d: &mut DrawHandler) {
         d.circles.reserve(self.bodies.len());
         for body in &self.bodies {
-            d.circle(body.pos, body.radius, body.color, 0.0);
+            d.circle(body.pos.cast().unwrap(), body.radius, body.color, 0.0);
         }
+    }
+    fn get_center_of_mass(&self) -> Vector2<f64> {
+        let mut total_mass = 0.0;
+        let mut total_position = Vector2::zero();
+        for body in &self.bodies {
+            total_mass += body.mass;
+            total_position += body.pos * body.mass;
+        }
+        total_position / total_mass
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 struct Body {
-    pos: Vector2<f32>,
-    vel: Vector2<f32>,
-    acc: Vector2<f32>,
+    pos: Vector2<f64>,
+    vel: Vector2<f64>,
+    acc: Vector2<f64>,
     radius: f32,
-    mass: f32,
+    mass: f64,
     color: Vector3<f32>,
 }
 
 impl Body {
-    fn new(pos: Vector2<f32>, vel: Vector2<f32>, radius: f32, color: Vector3<f32>) -> Self {
+    fn new(pos: Vector2<f64>, vel: Vector2<f64>, radius: f32, color: Vector3<f32>) -> Self {
         Body {
             pos,
             vel,
             acc: Vector2::zero(),
             radius,
-            mass: radius * radius * PI,
+            mass: radius as f64 * radius as f64 * PI,
             color,
         }
     }
@@ -274,9 +286,21 @@ impl eframe::App for App {
                 self.camera.view_height = self.camera.view_height.max(0.1);
             });
         }
+        let warp_time = clamp(self.warp_to - self.universe.time, 0.0, 1.0);
 
-        self.accumulated_time += dt * self.speed;
+        self.accumulated_time += dt * self.speed + warp_time;
         self.universe.update(&mut self.accumulated_time);
+
+        let universe_center_of_mass = self.universe.get_center_of_mass();
+        if universe_center_of_mass.magnitude() > 1000.0 {
+            println!("Moved");
+            for body in &mut self.universe.bodies {
+                body.pos -= universe_center_of_mass;
+            }
+            if self.selected.is_none() {
+                self.camera.pos -= universe_center_of_mass.cast().unwrap();
+            }
+        }
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(50, 50, 50)))
@@ -288,7 +312,7 @@ impl eframe::App for App {
                 self.camera.height = rect.height();
 
                 if let Some(selected) = self.selected {
-                    self.camera.offset = self.universe.bodies[selected].pos
+                    self.camera.offset = self.universe.bodies[selected].pos.cast().unwrap()
                 } else {
                     self.camera.offset = Vector2::zero()
                 }
@@ -307,19 +331,19 @@ impl eframe::App for App {
                     let mut clicked_on_body = false;
                     for i in 0..self.universe.bodies.len() {
                         let body = self.universe.bodies[i];
-                        let body_to_mouse = world_mouse_pos - body.pos;
+                        let body_to_mouse = world_mouse_pos - body.pos.cast().unwrap();
                         if body_to_mouse.magnitude() < body.radius {
                             if let Some(selected) = self.selected {
-                                self.camera.pos += self.universe.bodies[selected].pos
+                                self.camera.pos += self.universe.bodies[selected].pos.cast().unwrap()
                             }
                             self.selected = Some(i);
-                            self.camera.pos -= body.pos;
-                            self.camera.offset = body.pos;
+                            self.camera.pos -= body.pos.cast().unwrap();
+                            self.camera.offset = body.pos.cast().unwrap();
                             clicked_on_body = true;
                         }
                     }
                     self.selected = if !clicked_on_body && let Some(selected) = self.selected {
-                        self.camera.pos += self.universe.bodies[selected].pos;
+                        self.camera.pos += self.universe.bodies[selected].pos.cast().unwrap();
                         self.camera.offset = Vector2::zero();
                         None
                     } else {
@@ -328,8 +352,10 @@ impl eframe::App for App {
                 }
 
                 let mut d = DrawHandler::new();
+                d.circle(universe_center_of_mass.cast().unwrap(), 1.0, Vector3 { x: 0.25, y: 0.25, z: 0.25 }, 0.0);
 
                 self.universe.draw(&mut d);
+
 
                 let mut old_future = self.universe.clone();
                 let mut future = old_future.step(self.universe.step_time);
@@ -342,17 +368,39 @@ impl eframe::App for App {
                             let mut pos = future.bodies[i].pos;
                             let mut old_pos = old_future.bodies[i].pos;
                             if let Some(selected) = self.selected {
-                                pos -= future.bodies[selected].pos - self.camera.offset;
-                                old_pos -= old_future.bodies[selected].pos - self.camera.offset;
+                                pos -= future.bodies[selected].pos - self.camera.offset.cast().unwrap();
+                                old_pos -= old_future.bodies[selected].pos - self.camera.offset.cast().unwrap();
                             }
 
                             d.line(
-                                old_pos,
-                                pos,
-                                0.005 * self.camera.view_height,
+                                old_pos.cast().unwrap(),
+                                pos.cast().unwrap(),
+                                0.001 * self.camera.view_height,
                                 future.bodies[i].color,
                                 0.1,
                             );
+
+                            if response.clicked() {
+                                let pos = pos;
+                                let old = old_pos;
+                                let ed = pos - old;
+                                let e = ed.x;
+                                let d_ = -ed.y;
+                                let ba = world_mouse_pos.cast().unwrap() - old;
+                                let a = ba.x;
+                                let b = ba.y;
+                                let projected = Vector2 {
+                                    x: -(b * d_ * e - a * e * e) / (d_ * d_ + e * e),
+                                    y: (b * d_ * d_ - a * d_ * e) / (d_ * d_ + e * e),
+                                };
+                                if (ba - projected).magnitude() <= 0.01 * self.camera.view_height as f64 {
+                                    let length =
+                                        (Vector2 { x: e, y: -d_ }).normalize().dot(projected);
+                                    if (length < ed.magnitude()) && length > 0.0 {
+                                        self.warp_to = future.time;
+                                    }
+                                }
+                            }
                         }
                         old_future = future.clone();
                     }
