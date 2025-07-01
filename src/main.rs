@@ -44,6 +44,7 @@ struct App {
     file_dialog: FileDialog,
     file_interaction: FileInteraction,
     save_path: Option<PathBuf>,
+    help_open: bool,
 }
 
 enum FileInteraction {
@@ -218,6 +219,7 @@ impl App {
                 .default_save_extension("Orbit Save"),
             file_interaction: FileInteraction::None,
             save_path,
+            help_open: true,
         })
     }
 }
@@ -277,6 +279,8 @@ impl eframe::App for App {
                 ui.menu_button("Windows", |ui| {
                     self.stats_open |= ui.button("Stats").clicked();
                 });
+
+                self.help_open |= ui.button("Help").clicked();
             });
         });
 
@@ -544,6 +548,27 @@ impl eframe::App for App {
                 if self.lagging {
                     ui.label("The game is lagging!");
                 }
+            });
+
+        egui::Window::new("Guide")
+            .open(&mut self.help_open)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.heading("How to use:");
+                ui.label(
+                    "- Time (Bottom Bar)\n\
+                        The First slider controls where you are in the simulation\n\n\
+                        Gen Future is in seconds and controls how many seconds into the future it is allowed to simulate from the current time(controlled from the slider above)\n\n\
+                        Show Future is the amount of seconds bodies paths are displayed into the future\n\n\
+                        Path Quality controls how often a new line is drawn, eg:128 every 128t a line is drawn to show the path(This is only visual)\n\n\
+                        Speed Controls how fast the simulation is played back, The simulation starts Paused\n\n\
+                        Delete Past and Delete Future removes the past or future\n\n\n\
+                        - Controls\n\
+                        WASD to move around\n\n\
+                        Right Click on a body to focus on it, making all orbit paths and bodys relative to it. Right Click again not on a body to unfocus\n\n\
+                        Left Click on a body to select it, when a body is selected a window will appear with the body's components, When paused you can edit these components (NOTE: When editing components, from that point the simulation has to recompute. Do not have Gen Future too high to avoid lag)\n\
+                        ",
+                );
             });
 
         if !ctx.wants_keyboard_input() {
