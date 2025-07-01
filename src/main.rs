@@ -1,5 +1,3 @@
-use std::sync::{Arc, Condvar, Mutex};
-
 use crate::{
     body::{Body, BodyId},
     camera::Camera,
@@ -13,6 +11,8 @@ use eframe::{
     egui::{self},
     wgpu,
 };
+use egui_file_dialog::FileDialog;
+use std::sync::{Arc, Condvar, Mutex};
 
 pub mod body;
 pub mod camera;
@@ -38,6 +38,14 @@ struct App {
     show_future: f64,
     path_quality: usize,
     selected: Option<BodyId>,
+    file_dialog: FileDialog,
+    file_interaction: FileInteraction,
+}
+
+enum FileInteraction {
+    None,
+    Save,
+    Load,
 }
 
 struct ThreadState {
@@ -188,6 +196,12 @@ impl App {
             show_future: 100.0,
             path_quality: 128,
             selected: None,
+            file_dialog: FileDialog::new()
+                .add_file_filter_extensions("Orbit Save", vec!["orbit"])
+                .default_file_filter("Orbit Save")
+                .add_save_extension("Orbit Save", "orbit")
+                .default_save_extension("Orbit Save"),
+            file_interaction: FileInteraction::None,
         })
     }
 }
@@ -202,10 +216,60 @@ impl eframe::App for App {
         let mut current_state_modified = false;
 
         egui::TopBottomPanel::top("Menu").show(ctx, |ui| {
-            ui.menu_button("Windows", |ui| {
-                self.stats_open |= ui.button("Stats").clicked();
+            ui.horizontal(|ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("Save").clicked() {
+                        self.file_interaction = FileInteraction::Save;
+                        self.file_dialog.save_file();
+                    }
+                    if ui.button("Load").clicked() {
+                        self.file_interaction = FileInteraction::Load;
+                        self.file_dialog.pick_file();
+                    }
+                });
+                ui.menu_button("Windows", |ui| {
+                    self.stats_open |= ui.button("Stats").clicked();
+                });
             });
         });
+
+        self.file_dialog.update(ctx);
+        'file_loading: {
+            if let Some(path) = self.file_dialog.take_picked() {
+                match core::mem::replace(&mut self.file_interaction, FileInteraction::None) {
+                    FileInteraction::None => {}
+                    FileInteraction::Save => {
+                        let save_string = serde_json::to_string(&Save {
+                            current_state: self.current_state,
+                            step_size: self.step_size,
+                            camera: self.camera,
+                            states: self.states.as_slice().into(),
+                        })
+                        .unwrap();
+                        _ = std::fs::write(path, save_string);
+                    }
+                    FileInteraction::Load => {
+                        let Ok(string) = std::fs::read_to_string(path) else {
+                            break 'file_loading;
+                        };
+                        let Ok(Save {
+                            current_state,
+                            step_size,
+                            camera,
+                            states,
+                        }) = serde_json::from_str(&string)
+                        else {
+                            break 'file_loading;
+                        };
+                        self.current_state = current_state;
+                        self.step_size = step_size;
+                        self.camera = camera;
+                        self.states = states.into_owned();
+                        current_state_modified = true;
+                    }
+                }
+            }
+        }
 
         egui::TopBottomPanel::bottom("Time").show(ctx, |ui| {
             ui.heading("Time");
