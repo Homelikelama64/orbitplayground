@@ -3,6 +3,7 @@ use std::{f64::consts::PI, num::NonZeroUsize};
 
 #[derive(Debug, Clone)]
 pub struct Body {
+    pub name: String,
     pub pos: Vector2<f64>,
     pub vel: Vector2<f64>,
     pub radius: f64,

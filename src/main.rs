@@ -32,9 +32,11 @@ struct App {
     accumulated_time: f64,
     lagging: bool,
     stats_open: bool,
-    selected: Option<BodyId>,
+    time_open: bool,
+    focused: Option<BodyId>,
     show_future: f64,
     path_quality: usize,
+    selected: Option<BodyId>,
 }
 
 struct ThreadState {
@@ -57,48 +59,42 @@ impl App {
 
         let mut inital_universe = Universe::new(1.0);
 
-        inital_universe.bodies.insert(
-            BodyId::next_id(),
-            Body {
-                pos: Vector2 { x: -5.0, y: 0.0 },
-                vel: Vector2 { x: -0.4, y: 0.5 },
-                radius: 1.0,
-                density: 1.0,
-                color: Vector3 {
-                    x: 1.0,
-                    y: 0.0,
-                    z: 0.0,
-                },
+        inital_universe.bodies.push(Body {
+            name: "Red".into(),
+            pos: Vector2 { x: -5.0, y: 0.0 },
+            vel: Vector2 { x: -0.4, y: 0.5 },
+            radius: 1.0,
+            density: 1.0,
+            color: Vector3 {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
             },
-        );
-        inital_universe.bodies.insert(
-            BodyId::next_id(),
-            Body {
-                pos: Vector2 { x: 5.0, y: 0.0 },
-                vel: Vector2 { x: -0.8, y: 0.5 },
-                radius: 1.0,
-                density: 1.0,
-                color: Vector3 {
-                    x: 0.0,
-                    y: 1.0,
-                    z: 0.0,
-                },
+        });
+        inital_universe.bodies.push(Body {
+            name: "Green".into(),
+            pos: Vector2 { x: 5.0, y: 0.0 },
+            vel: Vector2 { x: -0.8, y: 0.5 },
+            radius: 1.0,
+            density: 1.0,
+            color: Vector3 {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
             },
-        );
-        inital_universe.bodies.insert(
-            BodyId::next_id(),
-            Body {
-                pos: Vector2 { x: 0.0, y: 5.0 },
-                vel: Vector2 { x: 0.8, y: 0.5 },
-                radius: 1.3,
-                density: 1.0,
-                color: Vector3 {
-                    x: 0.0,
-                    y: 0.0,
-                    z: 1.0,
-                },
+        });
+        inital_universe.bodies.push(Body {
+            name: "Blue".into(),
+            pos: Vector2 { x: 0.0, y: 5.0 },
+            vel: Vector2 { x: 0.8, y: 0.5 },
+            radius: 1.3,
+            density: 1.0,
+            color: Vector3 {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
             },
-        );
+        });
 
         let gen_future = 20000;
         let step_size = 1.0 / 512.0;
@@ -168,9 +164,11 @@ impl App {
             accumulated_time: 0.0,
             lagging: false,
             stats_open: true,
-            selected: None,
+            time_open: true,
+            focused: None,
             show_future: 100.0,
             path_quality: 128,
+            selected: None,
         })
     }
 }
@@ -184,93 +182,213 @@ impl eframe::App for App {
         let dt = dt.as_secs_f64();
         let mut current_state_modified = false;
 
-        egui::TopBottomPanel::top("Time").show(ctx, |ui| {
-            ui.horizontal(|ui| {
+        egui::TopBottomPanel::top("Menu").show(ctx, |ui| {
+            ui.menu_button("Windows", |ui| {
                 self.stats_open |= ui.button("Stats").clicked();
+                self.time_open |= ui.button("Time").clicked();
             });
-            ui.label("Time");
-            ui.horizontal(|ui| {
-                let mut seconds = self.current_state as f64 * self.step_size;
-                if ui
-                    .add(egui::DragValue::new(&mut seconds).suffix("s").speed(1.0))
-                    .changed()
-                {
-                    self.current_state = (seconds / self.step_size) as usize;
-                }
-                ui.label(format!(
-                    " /  {:.2}s",
-                    self.states.len() as f64 * self.step_size
-                ));
-            });
-            let default_slider_width = ui.spacing_mut().slider_width;
-            ui.spacing_mut().slider_width = ui.available_width();
-            ui.add(egui::Slider::new(
-                &mut self.current_state,
-                0..=self.states.len() - 1,
-            ));
-            ui.spacing_mut().slider_width = default_slider_width;
-            ui.horizontal(|ui| {
-                ui.label("Gen Future: ");
-                let mut seconds = self.gen_future as f64 * self.step_size;
-                if ui
-                    .add(egui::DragValue::new(&mut seconds).suffix("s").speed(1.0))
-                    .changed()
-                {
-                    self.gen_future = (seconds / self.step_size) as usize;
-                }
-            });
-            ui.spacing_mut().slider_width = ui.available_width() / 2.0;
-            ui.horizontal(|ui| {
-                ui.label("Show Future: ");
-                ui.add(
-                    egui::Slider::new(&mut self.show_future, 0.0..=10000.0)
-                        .suffix("s")
-                        .step_by(1.0),
-                );
-            });
-            ui.spacing_mut().slider_width = default_slider_width;
-            ui.horizontal(|ui| {
-                ui.label("Path Quality: ");
-                ui.add(egui::Slider::new(&mut self.path_quality, 1..=128));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Speed: ");
-                ui.add(egui::DragValue::new(&mut self.speed).speed(0.1));
-                if ui.button("Play / Pause").clicked() {
-                    self.playing = !self.playing
-                }
-                if ui.button("0.1x").clicked() {
-                    self.speed = 0.1
-                }
-                if ui.button("0.5x").clicked() {
-                    self.speed = 0.5
-                }
-                if ui.button("1x").clicked() {
-                    self.speed = 1.0
-                }
-                if ui.button("5x").clicked() {
-                    self.speed = 5.0
-                }
-                if ui.button("10x").clicked() {
-                    self.speed = 10.0
-                }
-                if ui.button("50x").clicked() {
-                    self.speed = 50.0
-                }
-                if ui.button("100x").clicked() {
-                    self.speed = 100.0
-                }
-                self.speed = self.speed.max(0.0)
-            });
-            if ui.button("Delete Past").clicked() {
-                self.states.drain(..self.current_state);
-                self.current_state = 0;
-                self.states.shrink_to_fit();
-            }
-            if ui.button("Delete Future").clicked() {
-                current_state_modified = true;
-            }
         });
+
+        egui::Window::new("Time")
+            .open(&mut self.time_open)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    let mut seconds = self.current_state as f64 * self.step_size;
+                    if ui
+                        .add(egui::DragValue::new(&mut seconds).suffix("s").speed(1.0))
+                        .changed()
+                    {
+                        self.current_state = (seconds / self.step_size) as usize;
+                    }
+                    ui.label(format!(
+                        " /  {:.2}s",
+                        self.states.len() as f64 * self.step_size
+                    ));
+                });
+                let default_slider_width = ui.spacing_mut().slider_width;
+                ui.spacing_mut().slider_width = ui.available_width() - 75.0;
+                ui.add(egui::Slider::new(
+                    &mut self.current_state,
+                    0..=self.states.len() - 1,
+                ));
+                ui.spacing_mut().slider_width = default_slider_width;
+                ui.horizontal(|ui| {
+                    ui.label("Gen Future: ");
+                    let mut seconds = self.gen_future as f64 * self.step_size;
+                    if ui
+                        .add(egui::DragValue::new(&mut seconds).suffix("s").speed(1.0))
+                        .changed()
+                    {
+                        self.gen_future = (seconds / self.step_size) as usize;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Show Future: ");
+                    ui.spacing_mut().slider_width = ui.available_width() - 75.0;
+                    ui.add(
+                        egui::Slider::new(&mut self.show_future, 0.0..=10000.0)
+                            .suffix("s")
+                            .step_by(1.0),
+                    );
+                    ui.spacing_mut().slider_width = default_slider_width;
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Path Quality: ");
+                    ui.add(egui::Slider::new(&mut self.path_quality, 1..=128));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Speed: ");
+                    ui.add(egui::DragValue::new(&mut self.speed).speed(0.1));
+                    if ui.button("Play / Pause").clicked() {
+                        self.playing = !self.playing
+                    }
+                    if ui.button("0.1x").clicked() {
+                        self.speed = 0.1
+                    }
+                    if ui.button("0.5x").clicked() {
+                        self.speed = 0.5
+                    }
+                    if ui.button("1x").clicked() {
+                        self.speed = 1.0
+                    }
+                    if ui.button("5x").clicked() {
+                        self.speed = 5.0
+                    }
+                    if ui.button("10x").clicked() {
+                        self.speed = 10.0
+                    }
+                    if ui.button("50x").clicked() {
+                        self.speed = 50.0
+                    }
+                    if ui.button("100x").clicked() {
+                        self.speed = 100.0
+                    }
+                    self.speed = self.speed.max(0.0)
+                });
+                if ui.button("Delete Past").clicked() {
+                    self.states.drain(..self.current_state);
+                    self.current_state = 0;
+                    self.states.shrink_to_fit();
+                }
+                if ui.button("Delete Future").clicked() {
+                    current_state_modified = true;
+                }
+            });
+
+        {
+            let mut open = self.selected.is_some();
+            let name = self.selected.and_then(|selected| {
+                Some(
+                    self.states[self.current_state]
+                        .bodies
+                        .get(selected)?
+                        .name
+                        .as_str(),
+                )
+            });
+            egui::Window::new(name.unwrap_or("Selected Body"))
+                .id("Selected Body".into())
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    let Some(body) = self.selected.and_then(|selected| {
+                        self.states[self.current_state].bodies.get_mut(selected)
+                    }) else {
+                        ui.label("The selected body does not exist in this time :p");
+                        return;
+                    };
+                    let mut delete = false;
+                    ui.add_enabled_ui(!self.playing, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Name:");
+                            current_state_modified |=
+                                ui.text_edit_singleline(&mut body.name).changed();
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Position:");
+                            current_state_modified |= ui
+                                .add(
+                                    egui::DragValue::new(&mut body.pos.x)
+                                        .speed(1.0)
+                                        .prefix("x:"),
+                                )
+                                .changed();
+                            current_state_modified |= ui
+                                .add(
+                                    egui::DragValue::new(&mut body.pos.y)
+                                        .speed(1.0)
+                                        .prefix("y:"),
+                                )
+                                .changed();
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Velocity:");
+                            current_state_modified |= ui
+                                .add(
+                                    egui::DragValue::new(&mut body.vel.x)
+                                        .speed(0.1)
+                                        .prefix("x:"),
+                                )
+                                .changed();
+                            current_state_modified |= ui
+                                .add(
+                                    egui::DragValue::new(&mut body.vel.y)
+                                        .speed(0.1)
+                                        .prefix("y:"),
+                                )
+                                .changed();
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Radius:");
+                            current_state_modified |= ui
+                                .add(
+                                    egui::DragValue::new(&mut body.radius)
+                                        .speed(0.1)
+                                        .suffix("m"),
+                                )
+                                .changed();
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Density:");
+                            current_state_modified |= ui
+                                .add(
+                                    egui::DragValue::new(&mut body.density)
+                                        .speed(0.1)
+                                        .suffix("m^2/kg"),
+                                )
+                                .changed();
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Mass:");
+                            ui.add_enabled(
+                                false,
+                                egui::DragValue::new(&mut body.mass()).suffix("kg"),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Color:");
+                            let color: Vector3<f32> = body.color.cast().unwrap();
+                            let mut color: [f32; 3] = color.into();
+                            if ui.color_edit_button_rgb(&mut color).changed() {
+                                current_state_modified = true;
+                                let color: Vector3<f32> = color.into();
+                                body.color = color.cast().unwrap();
+                            }
+                        });
+                        if ui.button("Delete").clicked() {
+                            current_state_modified = true;
+                            delete = true;
+                        }
+                    });
+                    if delete {
+                        self.states[self.current_state]
+                            .bodies
+                            .remove(self.selected.unwrap());
+                    }
+                });
+            if self.selected.is_some() && !open {
+                self.selected = None;
+            }
+        }
 
         self.lagging = false;
         self.accumulated_time += (dt * self.playing as u8 as f64 * self.speed).max(0.0);
@@ -352,10 +470,10 @@ impl eframe::App for App {
                 self.camera.width = rect.width() as f64;
                 self.camera.height = rect.height() as f64;
 
-                if let Some(selected) = self.selected {
+                if let Some(focused) = self.focused {
                     self.camera.offset = -self.states[self.current_state]
                         .bodies
-                        .get(selected)
+                        .get(focused)
                         .unwrap()
                         .pos
                 } else {
@@ -382,22 +500,34 @@ impl eframe::App for App {
                         .for_each(|(key, body)| {
                             let mouse_to_body = body.pos - world_mouse_pos;
                             if mouse_to_body.magnitude() < body.radius {
-                                if let Some(_selected) = self.selected {
+                                if let Some(_focused) = self.focused {
                                     self.camera.pos -= self.camera.offset
                                 }
-                                self.selected = Some(key);
+                                self.focused = Some(key);
                                 self.camera.pos -= body.pos;
                                 self.camera.offset = -body.pos;
                                 clicked_on_body = true
                             }
                         });
-                    self.selected = if !clicked_on_body && let Some(_) = self.selected {
+                    self.focused = if !clicked_on_body && let Some(_) = self.focused {
                         self.camera.pos -= self.camera.offset;
                         self.camera.offset = Vector2::zero();
                         None
                     } else {
-                        self.selected
+                        self.focused
                     }
+                }
+
+                if response.clicked() {
+                    self.states[self.current_state]
+                        .bodies
+                        .iter()
+                        .for_each(|(key, body)| {
+                            let mouse_to_body = body.pos - world_mouse_pos;
+                            if mouse_to_body.magnitude() < body.radius {
+                                self.selected = Some(key);
+                            }
+                        });
                 }
 
                 let mut d = DrawHandler::new();
@@ -414,8 +544,8 @@ impl eframe::App for App {
                     if future_index + 2 > self.states.len() {
                         let universe = &self.states.last().unwrap();
                         universe.bodies.iter().for_each(|(_, body)| {
-                            let offset = if let Some(selected) = self.selected
-                                && let Some(body) = universe.bodies.get(selected)
+                            let offset = if let Some(focused) = self.focused
+                                && let Some(body) = universe.bodies.get(focused)
                             {
                                 body.pos + self.camera.offset
                             } else {
@@ -444,15 +574,15 @@ impl eframe::App for App {
                             let Some(future) = new_universe.bodies.get(id) else {
                                 return;
                             };
-                            let current_offset = if let Some(selected) = self.selected
-                                && let Some(body) = universe.bodies.get(selected)
+                            let current_offset = if let Some(focused) = self.focused
+                                && let Some(body) = universe.bodies.get(focused)
                             {
                                 body.pos + self.camera.offset
                             } else {
                                 self.camera.offset
                             };
-                            let future_offset = if let Some(selected) = self.selected
-                                && let Some(body) = new_universe.bodies.get(selected)
+                            let future_offset = if let Some(focused) = self.focused
+                                && let Some(body) = new_universe.bodies.get(focused)
                             {
                                 body.pos + self.camera.offset
                             } else {
