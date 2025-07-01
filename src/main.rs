@@ -443,24 +443,6 @@ impl eframe::App for App {
             });
         }
 
-        {
-            let mut lock = self.thread_state.generation_state.lock().unwrap();
-            if current_state_modified {
-                self.states.truncate(self.current_state + 1);
-                self.states.shrink_to_fit();
-                lock.states_buffer_size = self
-                    .gen_future
-                    .saturating_sub((self.states.len()) - self.current_state);
-                lock.initial_state = Some(self.states.last().unwrap().clone());
-            } else {
-                self.states.append(&mut lock.new_states);
-                lock.states_buffer_size = self
-                    .gen_future
-                    .saturating_sub((self.states.len()) - self.current_state);
-            }
-            self.thread_state.wakeup.notify_one();
-        }
-
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(50, 50, 50)))
             .show(ctx, |ui| {
@@ -528,6 +510,41 @@ impl eframe::App for App {
                                 self.selected = Some(key);
                             }
                         });
+                }
+
+                if response.clicked_by(egui::PointerButton::Middle) && !self.playing {
+                    current_state_modified = true;
+                    let new_body = self.states[self.current_state].bodies.push(Body {
+                        name: "Unnamed".into(),
+                        pos: world_mouse_pos,
+                        vel: Vector2::zero(),
+                        radius: 1.0,
+                        density: 1.0,
+                        color: Vector3 {
+                            x: 1.0,
+                            y: 1.0,
+                            z: 1.0,
+                        },
+                    });
+                    self.selected = Some(new_body)
+                }
+
+                {
+                    let mut lock = self.thread_state.generation_state.lock().unwrap();
+                    if current_state_modified {
+                        self.states.truncate(self.current_state + 1);
+                        self.states.shrink_to_fit();
+                        lock.states_buffer_size = self
+                            .gen_future
+                            .saturating_sub((self.states.len()) - self.current_state);
+                        lock.initial_state = Some(self.states.last().unwrap().clone());
+                    } else {
+                        self.states.append(&mut lock.new_states);
+                        lock.states_buffer_size = self
+                            .gen_future
+                            .saturating_sub((self.states.len()) - self.current_state);
+                    }
+                    self.thread_state.wakeup.notify_one();
                 }
 
                 let mut d = DrawHandler::new();

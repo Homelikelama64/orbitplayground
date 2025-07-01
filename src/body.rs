@@ -62,8 +62,10 @@ impl BodyList {
         }
     }
 
-    pub fn push(&mut self, body: Body) {
-        self.bodies.push((BodyId::next_id(), body));
+    pub fn push(&mut self, body: Body) -> BodyId {
+        let id = BodyId::next_id();
+        self.bodies.push((id, body));
+        id
     }
 
     pub fn remove(&mut self, id: BodyId) -> Option<Body> {
