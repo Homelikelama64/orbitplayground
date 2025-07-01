@@ -2288,7 +2288,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "orbit_playgroundv2"
+name = "orbit_playground"
 version = "0.1.0"
 dependencies = [
  "anyhow",
