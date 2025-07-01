@@ -1,29 +1,67 @@
-use std::f64::consts::{PI, TAU};
-
 use crate::{
+    body::{Body, BodyId},
+    camera::Camera,
     drawing::DrawHandler,
     rendering::{GpuCamera, RenderData, RenderState},
+    save::Save,
+    universe::Universe,
 };
-use cgmath::{Vector2, Vector3, num_traits::clamp, prelude::*};
+use cgmath::{InnerSpace, Vector2, Vector3, Zero};
 use eframe::{
     egui::{self},
     wgpu,
 };
-use slotmap::{SlotMap, new_key_type};
+use egui_file_dialog::FileDialog;
+use std::{
+    path::PathBuf,
+    sync::{Arc, Condvar, Mutex},
+};
 
+pub mod body;
+pub mod camera;
 pub mod drawing;
 pub mod rendering;
+pub mod save;
+pub mod universe;
 
 struct App {
     camera: Camera,
-    universe: Universe,
     last_time: Option<std::time::Instant>,
-    look_ahead: f32,
-    look_quality: usize,
-    accumulated_time: f32,
+    states: Vec<Universe>,
+    current_state: usize,
+    gen_future: usize,
+    step_size: f64,
+    thread_state: Arc<ThreadState>,
+    speed: f64,
+    playing: bool,
+    accumulated_time: f64,
+    lagging: bool,
+    stats_open: bool,
+    focused: Option<BodyId>,
+    show_future: f64,
+    path_quality: usize,
     selected: Option<BodyId>,
-    speed: f32,
-    warp_to: f32,
+    file_dialog: FileDialog,
+    file_interaction: FileInteraction,
+    save_path: Option<PathBuf>,
+}
+
+enum FileInteraction {
+    None,
+    Save,
+    Load,
+}
+
+struct ThreadState {
+    generation_state: Mutex<GenerationState>,
+    wakeup: Condvar,
+}
+
+struct GenerationState {
+    initial_state: Option<Universe>,
+    new_states: Vec<Universe>,
+    states_buffer_size: usize,
+    step_size: f64,
 }
 
 impl App {
@@ -32,309 +70,155 @@ impl App {
         let state = RenderState::new(renderer.target_format, &renderer.device, &renderer.queue)?;
         renderer.renderer.write().callback_resources.insert(state);
 
-        let mut universe = Universe::new(1.0);
-        //universe.bodies.push(Body::new(
-        //    Vector2 { x: 5.0, y: 0.0 },
-        //    Vector2 { x: 0.0, y: 1.0 },
-        //    1.0,
-        //    Vector3 {
-        //        x: 0.0,
-        //        y: 1.0,
-        //        z: 0.0,
-        //    },
-        //));
-        //universe.bodies.push(Body::new(
-        //    Vector2 { x: 0.0, y: 0.0 },
-        //    Vector2 { x: 0.0, y: 0.0 },
-        //    1.0,
-        //    Vector3 {
-        //        x: 1.0,
-        //        y: 0.0,
-        //        z: 1.0,
-        //    },
-        //));
-        //universe.bodies.push(Body::new(
-        //    Vector2 { x: -5.0, y: 0.0 },
-        //    Vector2 { x: 0.0, y: -1.0 },
-        //    1.001,
-        //    Vector3 {
-        //        x: 1.0,
-        //        y: 1.0,
-        //        z: 0.0,
-        //    },
-        //));
+        let mut inital_universe = Universe::new(1.0);
 
-        //universe.bodies.push(Body::new(
-        //    Vector2 { x: -5.0, y: 0.0 },
-        //    Vector2 { x: 0.0, y: 0.0 },
-        //    1.0,
-        //    Vector3 {
-        //        x: 1.0,
-        //        y: 1.0,
-        //        z: 1.0,
-        //    },
-        //));
-        //universe.bodies.push(Body::new(
-        //    Vector2 { x: 5.0, y: 0.0 },
-        //    Vector2 { x: 0.0, y: 0.0 },
-        //    1.0,
-        //    Vector3 {
-        //        x: 1.0,
-        //        y: 1.0,
-        //        z: 1.0,
-        //    },
-        //));
-
-        universe.bodies.insert(Body::new(
-            Vector2 { x: 0.0, y: 0.0 },
-            Vector2 { x: 0.0, y: 0.0 },
-            5.0,
-            Vector3 {
+        inital_universe.bodies.push(Body {
+            name: "Red".into(),
+            pos: Vector2 { x: -5.0, y: 0.0 },
+            vel: Vector2 { x: -0.4, y: 0.5 },
+            radius: 1.0,
+            density: 1.0,
+            color: Vector3 {
                 x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        });
+        inital_universe.bodies.push(Body {
+            name: "Green".into(),
+            pos: Vector2 { x: 5.0, y: 0.0 },
+            vel: Vector2 { x: -0.8, y: 0.5 },
+            radius: 1.0,
+            density: 1.0,
+            color: Vector3 {
+                x: 0.0,
                 y: 1.0,
+                z: 0.0,
+            },
+        });
+        inital_universe.bodies.push(Body {
+            name: "Blue".into(),
+            pos: Vector2 { x: 0.0, y: 5.0 },
+            vel: Vector2 { x: 0.8, y: 0.5 },
+            radius: 1.3,
+            density: 1.0,
+            color: Vector3 {
+                x: 0.0,
+                y: 0.0,
                 z: 1.0,
             },
-        ));
-        universe.bodies.insert(Body::new(
-            Vector2 { x: 20.0, y: 0.0 },
-            Vector2 { x: 0.0, y: 0.1 },
-            1.0,
-            Vector3 {
-                x: 1.0,
-                y: 1.0,
-                z: 1.0,
-            },
-        ));
+        });
 
-        Ok(Self {
-            camera: Camera {
-                pos: Vector2 { x: 0.0, y: 0.0 },
-                offset: Vector2 { x: 0.0, y: 0.0 },
-                view_height: 10.0,
-                width: 0.0,
-                height: 0.0,
-            },
-            universe,
-            look_ahead: 0.0,
-            look_quality: 8,
-            last_time: None,
-            accumulated_time: 0.0,
-            selected: None,
-            speed: 1.0,
-            warp_to: 0.0,
-        })
-    }
-}
+        let mut states = vec![inital_universe].into();
 
-#[derive(Debug, Clone, Copy)]
-pub struct Camera {
-    pos: Vector2<f32>,
-    offset: Vector2<f32>,
-    view_height: f32,
-    width: f32,
-    height: f32,
-}
+        let mut camera = Camera {
+            pos: Vector2 { x: 0.0, y: 0.0 },
+            offset: Vector2 { x: 0.0, y: 0.0 },
+            view_height: 10.0,
+            width: 0.0,
+            height: 0.0,
+        };
+        let mut current_state = 0;
+        let mut step_size = 1.0 / 512.0;
 
-impl Camera {
-    pub fn screen_to_world(&self, pos: Vector2<f32>) -> Vector2<f32> {
-        Vector2 {
-            x: (pos.x - self.width * 0.5) / self.width
-                * (self.view_height * (self.width / self.height))
-                + self.pos.x
-                + self.offset.x,
-            y: -(pos.y - self.height * 0.5) / self.height * self.view_height
-                + self.pos.y
-                + self.offset.y,
+        if let Some(save) = cc
+            .storage
+            .unwrap()
+            .get_string("Save")
+            .and_then(|s| serde_json::from_str(&s).ok())
+        {
+            Save {
+                current_state,
+                step_size,
+                camera,
+                states,
+            } = save;
         }
-    }
-    pub fn world_to_screen(&self, pos: Vector2<f32>) -> Vector2<f32> {
-        Vector2 {
-            x: (pos.x - self.pos.x - self.offset.x)
-                * (self.width / (self.view_height * (self.width / self.height)))
-                + self.width * 0.5,
-            y: (pos.y - self.pos.y - self.offset.y) * (self.height / self.view_height)
-                + self.height * 0.5,
+        let mut save_path: Option<PathBuf> = cc
+            .storage
+            .unwrap()
+            .get_string("SavePath")
+            .map(PathBuf::from);
+        if save_path
+            .as_ref()
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            save_path = None;
         }
-    }
-}
 
-#[derive(Debug, Clone)]
-struct Universe {
-    bodies: SlotMap<BodyId, Body>,
-    gravity: f32,
-    step_time: f32,
-    time: f32,
-    removing: Vec<BodyId>,
-    adding: Vec<Body>,
-}
+        let gen_future = 20000usize;
+        let thread_state = Arc::new(ThreadState {
+            generation_state: Mutex::new(GenerationState {
+                initial_state: Some(states.last().unwrap().clone()),
+                new_states: vec![],
+                states_buffer_size: gen_future.saturating_sub(states.len() - current_state),
+                step_size,
+            }),
+            wakeup: Condvar::new(),
+        });
 
-impl Universe {
-    fn new(gravity: f32) -> Self {
-        Universe {
-            bodies: SlotMap::<BodyId, Body>::with_key(),
-            gravity,
-            time: 0.0,
-            step_time: 1.0 / 128.0,
-            removing: vec![],
-            adding: vec![],
-        }
-    }
-    fn update(&mut self, time: &mut f32) {
-        while *time > self.step_time {
-            *self = self.step(self.step_time);
-            *time -= self.step_time;
-        }
-    }
-    fn step(&self, dt: f32) -> Self {
-        let mut universe = self.clone();
-        universe.time += dt;
-        universe.remove_queued();
-        universe.add_bodies();
-        let keys = universe.bodies.keys().collect::<Vec<_>>();
-        for (index, &i) in keys.iter().enumerate() {
-            universe.bodies[i].last_vel = universe.bodies[i].vel;
-            for j in index + 1..universe.bodies.len() {
-                let j = keys[j];
-                let [a, b] = universe.bodies.get_disjoint_mut([i, j]).unwrap();
-                let a_to_b = b.pos - a.pos;
-                let dist_sqr = a_to_b.magnitude2();
-                let dist = dist_sqr.sqrt();
-                a.vel += a_to_b.normalize() * universe.gravity as f64 * b.mass
-                    / a_to_b.magnitude2()
-                    * dt as f64;
-                b.vel -= a_to_b.normalize() * universe.gravity as f64 * a.mass
-                    / a_to_b.magnitude2()
-                    * dt as f64;
-                let distance_edge = dist - a.radius as f64 - b.radius as f64;
-                if distance_edge < 0.0 {
-                    let new_a_vel = a.vel
-                        - -a_to_b
-                            * ((2.0 * b.mass) / (a.mass + b.mass))
-                            * ((a.vel - b.vel).dot(-a_to_b) / dist_sqr);
-                    let new_b_vel = b.vel
-                        - a_to_b
-                            * ((2.0 * a.mass) / (a.mass + b.mass))
-                            * ((b.vel - a.vel).dot(a_to_b) / dist_sqr);
-
-                    let a_collision_acc = a.vel - new_a_vel;
-                    let b_collision_acc = b.vel - new_b_vel;
-                    let a_collision_force = 0.5 * a.mass * a_collision_acc.magnitude2();
-                    let b_collision_force = 0.5 * b.mass * b_collision_acc.magnitude2();
-                    if a_collision_force > a.gravitational_binding_energy(universe.gravity) {
-                        dbg!(a_collision_force);
-                        dbg!(a.gravitational_binding_energy(universe.gravity));
-                        println!("A broke Apart");
-                        universe.break_body(i);
+        std::thread::spawn({
+            let thread_state = thread_state.clone();
+            move || {
+                let mut state = None;
+                let mut lock = thread_state.generation_state.lock().unwrap();
+                loop {
+                    if let Some(initial_state) = lock.initial_state.take() {
+                        lock.new_states.clear();
+                        state = Some(initial_state);
                     }
-                    let b = &mut universe.bodies[j];
-                    if b_collision_force > b.gravitational_binding_energy(universe.gravity) {
-                        dbg!(b_collision_force);
-                        dbg!(b.gravitational_binding_energy(universe.gravity));
-                        universe.break_body(j);
+
+                    if lock.new_states.len() >= lock.states_buffer_size {
+                        lock = thread_state.wakeup.wait(lock).unwrap();
+                        continue;
                     }
-                    let [a, b] = universe.bodies.get_disjoint_mut([i, j]).unwrap();
+                    let step_size = lock.step_size;
 
-                    a.vel = new_a_vel;
-                    b.vel = new_b_vel;
+                    if let Some(old_state) = &state {
+                        drop(lock);
 
-                    a.pos -=
-                        (a_to_b.normalize() * -distance_edge) * (2.0 * a.mass) / (a.mass + b.mass);
-                    b.pos +=
-                        (a_to_b.normalize() * -distance_edge) * (2.0 * b.mass) / (a.mass + b.mass);
+                        let mut new_state = old_state.clone();
+                        new_state.step(step_size);
+
+                        lock = thread_state.generation_state.lock().unwrap();
+                        if lock.new_states.len() >= lock.states_buffer_size {
+                            lock = thread_state.wakeup.wait(lock).unwrap();
+                            continue;
+                        }
+                        lock.new_states.push(new_state.clone());
+                        state = Some(new_state);
+                    } else {
+                        lock = thread_state.wakeup.wait(lock).unwrap();
+                    }
                 }
             }
+        });
 
-            let body = &mut universe.bodies[i];
-
-            body.pos += body.vel * dt as f64;
-        }
-        universe
-    }
-    fn remove_queued(&mut self) {
-        self.removing.sort_by_key(|&x| core::cmp::Reverse(x));
-        for i in self.removing.drain(..) {
-            self.bodies.remove(i);
-        }
-    }
-    fn add_bodies(&mut self) {
-        for new in &self.adding {
-            self.bodies.insert(*new);
-        }
-        self.adding.clear();
-    }
-    fn draw(&self, d: &mut DrawHandler) {
-        d.circles.reserve(self.bodies.len());
-        for (key, body) in &self.bodies {
-            d.circle(body.pos.cast().unwrap(), body.radius, body.color, 0.0);
-        }
-    }
-    fn get_center_of_mass(&self) -> Vector2<f64> {
-        let mut total_mass = 0.0;
-        let mut total_position = Vector2::zero();
-        for (key, body) in &self.bodies {
-            total_mass += body.mass;
-            total_position += body.pos * body.mass;
-        }
-        total_position / total_mass
-    }
-    fn break_body(&mut self, id: BodyId) {
-        let body = &self.bodies[id];
-        if body.radius < 0.3 {
-            self.removing.push(id);
-            return;
-        }
-
-        let radius = body.radius / 3.0;
-        for i in 0..5 {
-            let angle = (TAU / 6.0) * i as f64;
-            let dir = Vector2 {
-                x: angle.sin(),
-                y: angle.cos(),
-            };
-            self.adding.push(Body::new(
-                body.pos + dir * (body.radius - radius) as f64,
-                body.vel * 1.0,
-                radius,
-                body.color,
-            ));
-        }
-        self.adding
-            .push(Body::new(body.pos, body.vel * 1.0, radius, body.color));
-        self.removing.push(id);
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Body {
-    pos: Vector2<f64>,
-    vel: Vector2<f64>,
-    last_vel: Vector2<f64>,
-    radius: f32,
-    mass: f64,
-    color: Vector3<f32>,
-}
-
-new_key_type! {
-    struct BodyId;
-}
-
-impl Body {
-    fn new(pos: Vector2<f64>, vel: Vector2<f64>, radius: f32, color: Vector3<f32>) -> Self {
-        Body {
-            pos,
-            vel,
-            last_vel: vel,
-            radius,
-            mass: radius as f64 * radius as f64 * PI,
-            color,
-        }
-    }
-    fn acc(&self) -> Vector2<f64> {
-        self.vel - self.last_vel
-    }
-    fn gravitational_binding_energy(&self, gravity: f32) -> f64 {
-        // https://physics.stackexchange.com/questions/216377/gravitational-binding-energy-of-2d-circle
-        (2.0 * gravity as f64 * self.mass.powi(2)) / (3.0 * self.radius as f64)
+        Ok(Self {
+            camera,
+            last_time: None,
+            states: states.into_owned(),
+            current_state,
+            gen_future,
+            step_size,
+            thread_state,
+            speed: 1.0,
+            playing: false,
+            accumulated_time: 0.0,
+            lagging: false,
+            stats_open: true,
+            focused: None,
+            show_future: 100.0,
+            path_quality: 128,
+            selected: None,
+            file_dialog: FileDialog::new()
+                .add_file_filter_extensions("Orbit Save", vec!["orbit"])
+                .default_file_filter("Orbit Save")
+                .add_save_extension("Orbit Save", "orbit")
+                .default_save_extension("Orbit Save"),
+            file_interaction: FileInteraction::None,
+            save_path,
+        })
     }
 }
 
@@ -344,109 +228,359 @@ impl eframe::App for App {
         let dt = time - self.last_time.unwrap_or(time);
         self.last_time = Some(time);
 
-        let dt = dt.as_secs_f32();
+        let dt = dt.as_secs_f64();
+        let mut current_state_modified = false;
 
-        let universe_center_of_mass = self.universe.get_center_of_mass();
-        egui::Window::new("Stats").resizable(false).show(ctx, |ui| {
-            ui.label(format!("Frame Time: {:.3}ms", 1000.0 * dt));
-            ui.label(format!("FPS: {:.3}", 1.0 / dt));
-            ui.label(format!(
-                "Center: x:{:.2}, y:{:.2}, ({:.2})",
-                universe_center_of_mass.x,
-                universe_center_of_mass.y,
-                universe_center_of_mass.magnitude()
-            ));
-        });
-
-        egui::Window::new("Physics")
-            .resizable(false)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Gravity Strength: ");
-                    ui.add(egui::DragValue::new(&mut self.universe.gravity).speed(0.1));
+        egui::TopBottomPanel::top("Menu").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("New").clicked() {
+                        self.save_path = None;
+                        self.current_state = 0;
+                        self.states = vec![Universe::new(1.0)];
+                        self.camera.pos = Vector2::zero();
+                        self.camera.offset = Vector2::zero();
+                        self.camera.view_height = 10.0;
+                        self.selected = None;
+                        self.focused = None;
+                        self.speed = 1.0;
+                        self.gen_future = (5.0 / self.step_size) as usize;
+                        current_state_modified = true;
+                    }
+                    if ui.button("Save").clicked() {
+                        match &self.save_path {
+                            Some(save_path) => {
+                                let save_string = serde_json::to_string(&Save {
+                                    current_state: self.current_state,
+                                    step_size: self.step_size,
+                                    camera: self.camera,
+                                    states: self.states.as_slice().into(),
+                                })
+                                .unwrap();
+                                _ = std::fs::write(save_path, save_string);
+                            }
+                            None => {
+                                self.file_interaction = FileInteraction::Save;
+                                self.file_dialog.save_file();
+                            }
+                        }
+                    }
+                    if ui.button("Save As").clicked() {
+                        self.file_interaction = FileInteraction::Save;
+                        self.file_dialog.save_file();
+                    }
+                    if ui.button("Open").clicked() {
+                        self.file_interaction = FileInteraction::Load;
+                        self.file_dialog.pick_file();
+                    }
+                });
+                ui.menu_button("Windows", |ui| {
+                    self.stats_open |= ui.button("Stats").clicked();
                 });
             });
+        });
 
-        egui::Window::new("Display")
+        self.file_dialog.update(ctx);
+        'file_loading: {
+            if let Some(mut path) = self.file_dialog.take_picked() {
+                match core::mem::replace(&mut self.file_interaction, FileInteraction::None) {
+                    FileInteraction::None => {}
+                    FileInteraction::Save => {
+                        let save_string = serde_json::to_string(&Save {
+                            current_state: self.current_state,
+                            step_size: self.step_size,
+                            camera: self.camera,
+                            states: self.states.as_slice().into(),
+                        })
+                        .unwrap();
+                        if path.extension().is_none() {
+                            path.set_extension("orbit");
+                        }
+                        _ = std::fs::write(&path, save_string);
+                        self.save_path = Some(path);
+                    }
+                    FileInteraction::Load => {
+                        let Ok(string) = std::fs::read_to_string(path) else {
+                            break 'file_loading;
+                        };
+                        let Ok(Save {
+                            current_state,
+                            step_size,
+                            camera,
+                            states,
+                        }) = serde_json::from_str(&string)
+                        else {
+                            break 'file_loading;
+                        };
+                        self.current_state = current_state;
+                        self.step_size = step_size;
+                        self.camera = camera;
+                        self.states = states.into_owned();
+                        current_state_modified = true;
+                    }
+                }
+            }
+        }
+
+        egui::TopBottomPanel::bottom("Time").show(ctx, |ui| {
+            ui.heading("Time");
+            ui.horizontal(|ui| {
+                let mut seconds = self.current_state as f64 * self.step_size;
+                if ui
+                    .add(egui::DragValue::new(&mut seconds).suffix("s").speed(1.0))
+                    .changed()
+                {
+                    self.current_state = (seconds / self.step_size) as usize;
+                }
+                ui.label(format!(
+                    " /  {:.2}s",
+                    self.states.len() as f64 * self.step_size
+                ));
+            });
+            let default_slider_width = ui.spacing_mut().slider_width;
+            ui.spacing_mut().slider_width = ui.available_width() - 75.0;
+            ui.add(egui::Slider::new(
+                &mut self.current_state,
+                0..=self.states.len() - 1,
+            ));
+            ui.spacing_mut().slider_width = default_slider_width;
+            ui.horizontal(|ui| {
+                ui.label("Gen Future: ");
+                let mut seconds = self.gen_future as f64 * self.step_size;
+                if ui
+                    .add(egui::DragValue::new(&mut seconds).suffix("s").speed(1.0))
+                    .changed()
+                {
+                    self.gen_future = (seconds / self.step_size) as usize;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Show Future: ");
+                ui.spacing_mut().slider_width = ui.available_width() - 75.0;
+                ui.add(
+                    egui::Slider::new(&mut self.show_future, 0.0..=10000.0)
+                        .suffix("s")
+                        .step_by(1.0),
+                );
+                ui.spacing_mut().slider_width = default_slider_width;
+            });
+            ui.horizontal(|ui| {
+                ui.label("Path Quality: ");
+                ui.add(egui::Slider::new(&mut self.path_quality, 1..=128));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Speed: ");
+                ui.add(egui::DragValue::new(&mut self.speed).speed(0.1));
+                if ui.button("Play / Pause").clicked() {
+                    self.playing = !self.playing
+                }
+                if ui.button("0.1x").clicked() {
+                    self.speed = 0.1
+                }
+                if ui.button("0.5x").clicked() {
+                    self.speed = 0.5
+                }
+                if ui.button("1x").clicked() {
+                    self.speed = 1.0
+                }
+                if ui.button("5x").clicked() {
+                    self.speed = 5.0
+                }
+                if ui.button("10x").clicked() {
+                    self.speed = 10.0
+                }
+                if ui.button("50x").clicked() {
+                    self.speed = 50.0
+                }
+                if ui.button("100x").clicked() {
+                    self.speed = 100.0
+                }
+                self.speed = self.speed.max(0.0)
+            });
+            if ui.button("Delete Past").clicked() {
+                self.states.drain(..self.current_state);
+                self.current_state = 0;
+                self.states.shrink_to_fit();
+            }
+            if ui.button("Delete Future").clicked() {
+                current_state_modified = true;
+            }
+        });
+
+        {
+            let mut open = self.selected.is_some();
+            let name = self.selected.and_then(|selected| {
+                Some(
+                    self.states[self.current_state]
+                        .bodies
+                        .get(selected)?
+                        .name
+                        .as_str(),
+                )
+            });
+            egui::Window::new(name.unwrap_or("Selected Body"))
+                .id("Selected Body".into())
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    let Some(body) = self.selected.and_then(|selected| {
+                        self.states[self.current_state].bodies.get_mut(selected)
+                    }) else {
+                        ui.label("The selected body does not exist in this time :p");
+                        return;
+                    };
+                    let mut delete = false;
+                    ui.add_enabled_ui(!self.playing, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Name:");
+                            current_state_modified |=
+                                ui.text_edit_singleline(&mut body.name).changed();
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Position:");
+                            current_state_modified |= ui
+                                .add(
+                                    egui::DragValue::new(&mut body.pos.x)
+                                        .speed(1.0)
+                                        .prefix("x:"),
+                                )
+                                .changed();
+                            current_state_modified |= ui
+                                .add(
+                                    egui::DragValue::new(&mut body.pos.y)
+                                        .speed(1.0)
+                                        .prefix("y:"),
+                                )
+                                .changed();
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Velocity:");
+                            current_state_modified |= ui
+                                .add(
+                                    egui::DragValue::new(&mut body.vel.x)
+                                        .speed(0.1)
+                                        .prefix("x:"),
+                                )
+                                .changed();
+                            current_state_modified |= ui
+                                .add(
+                                    egui::DragValue::new(&mut body.vel.y)
+                                        .speed(0.1)
+                                        .prefix("y:"),
+                                )
+                                .changed();
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Radius:");
+                            current_state_modified |= ui
+                                .add(
+                                    egui::DragValue::new(&mut body.radius)
+                                        .speed(0.1)
+                                        .suffix("m"),
+                                )
+                                .changed();
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Density:");
+                            current_state_modified |= ui
+                                .add(
+                                    egui::DragValue::new(&mut body.density)
+                                        .speed(0.1)
+                                        .suffix("m^2/kg"),
+                                )
+                                .changed();
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Mass:");
+                            ui.add_enabled(
+                                false,
+                                egui::DragValue::new(&mut body.mass()).suffix("kg"),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Color:");
+                            let color: Vector3<f32> = body.color.cast().unwrap();
+                            let mut color: [f32; 3] = color.into();
+                            if ui.color_edit_button_rgb(&mut color).changed() {
+                                current_state_modified = true;
+                                let color: Vector3<f32> = color.into();
+                                body.color = color.cast().unwrap();
+                            }
+                        });
+                        if ui.button("Delete").clicked() {
+                            current_state_modified = true;
+                            delete = true;
+                        }
+                    });
+                    if delete {
+                        self.states[self.current_state]
+                            .bodies
+                            .remove(self.selected.unwrap());
+                    }
+                });
+            if self.selected.is_some() && !open {
+                self.selected = None;
+            }
+        }
+
+        self.lagging = false;
+        self.accumulated_time += (dt * self.playing as u8 as f64 * self.speed).max(0.0);
+        while self.accumulated_time >= self.step_size {
+            if self.current_state + 1 < self.states.len() {
+                self.current_state += 1;
+            } else {
+                self.lagging = true;
+                self.accumulated_time = 0.0;
+                break;
+            }
+            self.accumulated_time -= self.step_size;
+        }
+
+        egui::Window::new("Stats")
+            .open(&mut self.stats_open)
             .resizable(false)
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Look Ahead: ");
-                    //ui.add(egui::DragValue::new(&mut self.look_ahead).speed(0.1));
-                    ui.add(egui::Slider::new(&mut self.look_ahead, 0.0..=2000.0).step_by(1.0));
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Look Ahead Quality(Higher = Worse): ");
-                    //ui.add(egui::DragValue::new(&mut self.look_ahead).speed(0.1));
-                    ui.add(egui::Slider::new(&mut self.look_quality, 1..=32).step_by(1.0));
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Speed: ");
-                    ui.add(egui::DragValue::new(&mut self.speed).speed(0.1));
-                    if ui.button("0.1x").clicked() {
-                        self.speed = 0.1
-                    }
-                    if ui.button("0.5x").clicked() {
-                        self.speed = 0.5
-                    }
-                    if ui.button("1x").clicked() {
-                        self.speed = 1.0
-                    }
-                    if ui.button("5x").clicked() {
-                        self.speed = 5.0
-                    }
-                    if ui.button("10x").clicked() {
-                        self.speed = 10.0
-                    }
-                    if ui.button("50x").clicked() {
-                        self.speed = 50.0
-                    }
-                    if ui.button("100x").clicked() {
-                        self.speed = 100.0
-                    }
-                });
+                ui.label(format!("Frame Time: {:.3}ms", 1000.0 * dt));
+                ui.label(format!("FPS: {:.3}", 1.0 / dt));
+                if self.lagging {
+                    ui.label("The game is lagging!");
+                }
             });
 
         if !ctx.wants_keyboard_input() {
             ctx.input(|i| {
                 let move_speed = 1.0;
-                self.camera.pos.y += i.key_down(egui::Key::W) as u8 as f32
+                self.camera.pos.y += i.key_down(egui::Key::W) as u8 as f64
                     * dt
                     * move_speed
                     * self.camera.view_height;
-                self.camera.pos.y -= i.key_down(egui::Key::S) as u8 as f32
+                self.camera.pos.y -= i.key_down(egui::Key::S) as u8 as f64
                     * dt
                     * move_speed
                     * self.camera.view_height;
-                self.camera.pos.x += i.key_down(egui::Key::D) as u8 as f32
+                self.camera.pos.x += i.key_down(egui::Key::D) as u8 as f64
                     * dt
                     * move_speed
                     * self.camera.view_height;
-                self.camera.pos.x -= i.key_down(egui::Key::A) as u8 as f32
+                self.camera.pos.x -= i.key_down(egui::Key::A) as u8 as f64
                     * dt
                     * move_speed
                     * self.camera.view_height;
+
+                if i.key_pressed(egui::Key::Delete)
+                    && let Some(selected) = self.selected
+                {
+                    self.selected = None;
+                    self.states[self.current_state].bodies.remove(selected);
+                    current_state_modified = true
+                }
             });
         }
         if !ctx.wants_pointer_input() {
             ctx.input(|i| {
-                self.camera.view_height -= i.raw_scroll_delta.y * self.camera.view_height * 0.005;
+                self.camera.view_height -=
+                    i.raw_scroll_delta.y as f64 * self.camera.view_height * 0.005;
                 self.camera.view_height = self.camera.view_height.max(0.1);
             });
-        }
-        let warp_time = clamp(self.warp_to - self.universe.time, 0.0, 5.0);
-
-        self.accumulated_time += dt * self.speed + warp_time;
-        self.universe.update(&mut self.accumulated_time);
-
-        let universe_center_of_mass = self.universe.get_center_of_mass();
-        if universe_center_of_mass.magnitude() > 100.0 {
-            for (_, body) in &mut self.universe.bodies {
-                body.pos -= universe_center_of_mass;
-            }
-            if self.selected.is_none() {
-                self.camera.pos -= universe_center_of_mass.cast().unwrap();
-            }
         }
 
         egui::CentralPanel::default()
@@ -455,118 +589,173 @@ impl eframe::App for App {
                 let (rect, response) =
                     ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
                 let aspect = rect.width() / rect.height();
-                self.camera.width = rect.width();
-                self.camera.height = rect.height();
+                self.camera.width = rect.width() as f64;
+                self.camera.height = rect.height() as f64;
 
-                if let Some(selected) = self.selected {
-                    self.camera.offset = self.universe.bodies[selected].pos.cast().unwrap()
+                if let Some(focused) = self.focused
+                    && let Some(body) = self.states[self.current_state].bodies.get(focused)
+                {
+                    self.camera.offset = -body.pos;
                 } else {
                     self.camera.offset = Vector2::zero()
-                }
-
-                let mouse_pos = if let Some(hover_pos) = response.hover_pos() {
+                };
+                let mouse_pos = if let Some(hover_pos) = ui.ctx().pointer_hover_pos() {
                     Vector2 {
-                        x: hover_pos.x,
-                        y: hover_pos.y,
+                        x: hover_pos.x - rect.left_top().x,
+                        y: hover_pos.y - rect.left_top().y,
                     }
                 } else {
                     Vector2::zero()
-                };
+                }
+                .cast()
+                .unwrap();
+
                 let world_mouse_pos = self.camera.screen_to_world(mouse_pos);
 
                 if response.clicked_by(egui::PointerButton::Secondary) {
                     let mut clicked_on_body = false;
-                    for (key, body) in &self.universe.bodies {
-                        let body_to_mouse = world_mouse_pos - body.pos.cast().unwrap();
-                        if body_to_mouse.magnitude() < body.radius {
-                            if let Some(selected) = self.selected {
-                                self.camera.pos +=
-                                    self.universe.bodies[selected].pos.cast().unwrap()
+                    self.states[self.current_state]
+                        .bodies
+                        .iter()
+                        .for_each(|(key, body)| {
+                            let mouse_to_body = body.pos - world_mouse_pos;
+                            if mouse_to_body.magnitude() < body.radius {
+                                if let Some(_focused) = self.focused {
+                                    self.camera.pos -= self.camera.offset
+                                }
+                                self.focused = Some(key);
+                                self.camera.pos -= body.pos;
+                                self.camera.offset = -body.pos;
+                                clicked_on_body = true
                             }
-                            self.selected = Some(key);
-                            self.camera.pos -= body.pos.cast().unwrap();
-                            self.camera.offset = body.pos.cast().unwrap();
-                            clicked_on_body = true;
-                        }
-                    }
-                    self.selected = if !clicked_on_body && let Some(selected) = self.selected {
-                        self.camera.pos += self.universe.bodies[selected].pos.cast().unwrap();
+                        });
+                    self.focused = if !clicked_on_body && let Some(_) = self.focused {
+                        self.camera.pos -= self.camera.offset;
                         self.camera.offset = Vector2::zero();
                         None
                     } else {
-                        self.selected
+                        self.focused
                     }
                 }
 
-                let mut d = DrawHandler::new();
-                d.circle(
-                    universe_center_of_mass.cast().unwrap(),
-                    1.0,
-                    Vector3 {
-                        x: 0.25,
-                        y: 0.25,
-                        z: 0.25,
-                    },
-                    0.0,
-                );
-
-                self.universe.draw(&mut d);
-
-                let mut old_future = self.universe.clone();
-                let mut future = old_future.step(self.universe.step_time);
-                d.quads.reserve(
-                    (self.look_ahead / self.universe.step_time) as usize * future.bodies.len(),
-                );
-                let mut will_time_warp = false;
-                for step in 0..(self.look_ahead / self.universe.step_time) as usize {
-                    if step % self.look_quality == 0 {
-                        for (key, body) in &future.bodies {
-                            let mut pos = body.pos;
-                            let mut old_pos = body.pos - body.vel * self.universe.step_time as f64 * self.look_quality as f64;
-                            if let Some(selected) = self.selected {
-                                pos -= future.bodies[selected].pos
-                                    - self.camera.offset.cast().unwrap();
-                                old_pos -= old_future.bodies[selected].pos
-                                    - self.camera.offset.cast().unwrap();
+                if response.clicked() {
+                    self.states[self.current_state]
+                        .bodies
+                        .iter()
+                        .for_each(|(key, body)| {
+                            let mouse_to_body = body.pos - world_mouse_pos;
+                            if mouse_to_body.magnitude() < body.radius {
+                                self.selected = Some(key);
                             }
+                        });
+                }
+
+                if response.clicked_by(egui::PointerButton::Middle) && !self.playing {
+                    current_state_modified = true;
+                    let new_body = self.states[self.current_state].bodies.push(Body {
+                        name: "Unnamed".into(),
+                        pos: world_mouse_pos,
+                        vel: Vector2::zero(),
+                        radius: 1.0,
+                        density: 1.0,
+                        color: Vector3 {
+                            x: 1.0,
+                            y: 1.0,
+                            z: 1.0,
+                        },
+                    });
+                    self.selected = Some(new_body)
+                }
+
+                {
+                    let mut lock = self.thread_state.generation_state.lock().unwrap();
+                    if current_state_modified {
+                        self.states[self.current_state].changed = true;
+                        self.states.truncate(self.current_state + 1);
+                        self.states.shrink_to_fit();
+                        lock.step_size = self.step_size;
+                        lock.states_buffer_size = self
+                            .gen_future
+                            .saturating_sub((self.states.len()) - self.current_state);
+                        lock.initial_state = Some(self.states.last().unwrap().clone());
+                    } else {
+                        self.states.append(&mut lock.new_states);
+                        lock.states_buffer_size = self
+                            .gen_future
+                            .saturating_sub((self.states.len()) - self.current_state);
+                    }
+                    self.thread_state.wakeup.notify_one();
+                }
+
+                let mut d = DrawHandler::new();
+
+                self.states[self.current_state].draw(&mut d);
+                d.quads.reserve(
+                    ((self.show_future / self.step_size) as usize).min(self.states.len() - 2)
+                        * self.states[self.current_state].bodies.len()
+                        / self.path_quality,
+                );
+                let mut old_index = self.current_state;
+                for i in 0..(self.show_future / self.step_size) as usize {
+                    let future_index = i + self.current_state;
+                    if future_index + 2 > self.states.len() {
+                        let universe = &self.states.last().unwrap();
+                        universe.bodies.iter().for_each(|(_, body)| {
+                            let offset = if let Some(focused) = self.focused
+                                && let Some(body) = universe.bodies.get(focused)
+                            {
+                                body.pos + self.camera.offset
+                            } else {
+                                self.camera.offset
+                            };
+                            d.circle(
+                                (body.pos - offset).cast().unwrap(),
+                                0.005 * self.camera.view_height as f32,
+                                Vector3 {
+                                    x: 0.75,
+                                    y: 0.75,
+                                    z: 0.75,
+                                },
+                                0.2,
+                            );
+                        });
+                        break;
+                    }
+                    let universe = &self.states[old_index];
+                    let new_universe = &self.states[future_index + 1];
+                    if (i + self.current_state) % self.path_quality == 0 {
+                        universe.bodies.iter().for_each(|(id, _)| {
+                            let Some(current) = universe.bodies.get(id) else {
+                                return;
+                            };
+                            let Some(future) = new_universe.bodies.get(id) else {
+                                return;
+                            };
+                            let current_offset = if let Some(focused) = self.focused
+                                && let Some(body) = universe.bodies.get(focused)
+                            {
+                                body.pos + self.camera.offset
+                            } else {
+                                self.camera.offset
+                            };
+                            let future_offset = if let Some(focused) = self.focused
+                                && let Some(body) = new_universe.bodies.get(focused)
+                            {
+                                body.pos + self.camera.offset
+                            } else {
+                                self.camera.offset
+                            };
 
                             d.line(
-                                old_pos.cast().unwrap(),
-                                pos.cast().unwrap(),
-                                0.002 * self.camera.view_height,
-                                future.bodies[key].color,
+                                (current.pos - current_offset).cast().unwrap(),
+                                (future.pos - future_offset).cast().unwrap(),
+                                0.005 * self.camera.view_height as f32,
+                                current.color.cast().unwrap(),
                                 0.1,
                             );
-
-                            if response.clicked() {
-                                let pos = pos;
-                                let old = old_pos;
-                                let ed = pos - old;
-                                let e = ed.x;
-                                let d_ = -ed.y;
-                                let ba = world_mouse_pos.cast().unwrap() - old;
-                                let a = ba.x;
-                                let b = ba.y;
-                                let projected = Vector2 {
-                                    x: -(b * d_ * e - a * e * e) / (d_ * d_ + e * e),
-                                    y: (b * d_ * d_ - a * d_ * e) / (d_ * d_ + e * e),
-                                };
-                                if (ba - projected).magnitude()
-                                    <= 0.01 * self.camera.view_height as f64
-                                {
-                                    let length =
-                                        (Vector2 { x: e, y: -d_ }).normalize().dot(projected);
-                                    if (length < ed.magnitude()) && length > 0.0 && !will_time_warp
-                                    {
-                                        self.warp_to = future.time;
-                                        will_time_warp = true
-                                    }
-                                }
-                            }
-                        }
-                        old_future = future.clone();
+                        });
+                        old_index = future_index
                     }
-                    future = future.step(self.universe.step_time);
                 }
 
                 ui.painter()
@@ -574,8 +763,8 @@ impl eframe::App for App {
                         rect,
                         RenderData {
                             camera: GpuCamera {
-                                position: self.camera.pos + self.camera.offset,
-                                vertical_height: self.camera.view_height,
+                                position: (self.camera.pos - self.camera.offset).cast().unwrap(),
+                                vertical_height: self.camera.view_height as f32,
                                 aspect,
                             },
                             quads: d.quads,
@@ -587,7 +776,25 @@ impl eframe::App for App {
         ctx.request_repaint();
     }
 
-    fn save(&mut self, _storage: &mut dyn eframe::Storage) {}
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        let save_string = serde_json::to_string(&Save {
+            current_state: self.current_state,
+            step_size: self.step_size,
+            camera: self.camera,
+            states: self.states.as_slice().into(),
+        })
+        .unwrap();
+        storage.set_string("Save", save_string);
+
+        let save_path = if let Some(save_path) = &self.save_path
+            && let Some(save_path) = save_path.to_str()
+        {
+            save_path.to_string()
+        } else {
+            String::new()
+        };
+        storage.set_string("SavePath", save_path);
+    }
 }
 
 fn main() -> eframe::Result<()> {
@@ -599,6 +806,17 @@ fn main() -> eframe::Result<()> {
             depth_buffer: 24,
             wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
                 present_mode: wgpu::PresentMode::AutoNoVsync,
+                wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(
+                    eframe::egui_wgpu::WgpuSetupCreateNew {
+                        device_descriptor: Arc::new(|adapter| wgpu::DeviceDescriptor {
+                            label: Some("wgpu device"),
+                            required_features: wgpu::Features::default(),
+                            required_limits: adapter.limits(),
+                            memory_hints: wgpu::MemoryHints::default(),
+                        }),
+                        ..Default::default()
+                    },
+                ),
                 ..Default::default()
             },
             ..Default::default()
