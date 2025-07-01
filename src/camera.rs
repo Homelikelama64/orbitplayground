@@ -1,6 +1,7 @@
 use cgmath::*;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Camera {
     pub pos: Vector2<f64>,
     pub offset: Vector2<f64>,

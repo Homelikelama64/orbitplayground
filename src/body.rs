@@ -1,7 +1,8 @@
 use cgmath::*;
+use serde::{Deserialize, Serialize, de::Visitor};
 use std::{f64::consts::PI, num::NonZeroUsize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Body {
     pub name: String,
     pub pos: Vector2<f64>,
@@ -110,5 +111,44 @@ impl BodyList {
 impl Default for BodyList {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Serialize for BodyList {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.collect_seq(self.iter().map(|(_, body)| body))
+    }
+}
+
+impl<'de> Deserialize<'de> for BodyList {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct BodyVisitor;
+
+        impl<'de> Visitor<'de> for BodyVisitor {
+            type Value = BodyList;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("sequence of Body")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut body_list = BodyList::new();
+                while let Some(body) = seq.next_element()? {
+                    body_list.push(body);
+                }
+                Ok(body_list)
+            }
+        }
+
+        deserializer.deserialize_seq(BodyVisitor)
     }
 }

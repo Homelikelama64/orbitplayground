@@ -1,8 +1,8 @@
-use cgmath::InnerSpace;
-
 use crate::{body::BodyList, drawing::DrawHandler};
+use cgmath::InnerSpace;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Universe {
     pub bodies: BodyList,
     pub gravity: f64,
