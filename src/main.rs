@@ -12,7 +12,10 @@ use eframe::{
     wgpu,
 };
 use egui_file_dialog::FileDialog;
-use std::sync::{Arc, Condvar, Mutex};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Condvar, Mutex},
+};
 
 pub mod body;
 pub mod camera;
@@ -40,6 +43,7 @@ struct App {
     selected: Option<BodyId>,
     file_dialog: FileDialog,
     file_interaction: FileInteraction,
+    save_path: Option<PathBuf>,
 }
 
 enum FileInteraction {
@@ -130,6 +134,17 @@ impl App {
                 states,
             } = save;
         }
+        let mut save_path: Option<PathBuf> = cc
+            .storage
+            .unwrap()
+            .get_string("SavePath")
+            .map(PathBuf::from);
+        if save_path
+            .as_ref()
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            save_path = None;
+        }
 
         let gen_future = 20000usize;
         let thread_state = Arc::new(ThreadState {
@@ -202,6 +217,7 @@ impl App {
                 .add_save_extension("Orbit Save", "orbit")
                 .default_save_extension("Orbit Save"),
             file_interaction: FileInteraction::None,
+            save_path,
         })
     }
 }
@@ -218,11 +234,42 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("Menu").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.menu_button("File", |ui| {
+                    if ui.button("New").clicked() {
+                        self.save_path = None;
+                        self.current_state = 0;
+                        self.states = vec![Universe::new(1.0)];
+                        self.camera.pos = Vector2::zero();
+                        self.camera.offset = Vector2::zero();
+                        self.camera.view_height = 10.0;
+                        self.selected = None;
+                        self.focused = None;
+                        self.speed = 1.0;
+                        self.gen_future = (5.0 / self.step_size) as usize;
+                        current_state_modified = true;
+                    }
                     if ui.button("Save").clicked() {
+                        match &self.save_path {
+                            Some(save_path) => {
+                                let save_string = serde_json::to_string(&Save {
+                                    current_state: self.current_state,
+                                    step_size: self.step_size,
+                                    camera: self.camera,
+                                    states: self.states.as_slice().into(),
+                                })
+                                .unwrap();
+                                _ = std::fs::write(save_path, save_string);
+                            }
+                            None => {
+                                self.file_interaction = FileInteraction::Save;
+                                self.file_dialog.save_file();
+                            }
+                        }
+                    }
+                    if ui.button("Save As").clicked() {
                         self.file_interaction = FileInteraction::Save;
                         self.file_dialog.save_file();
                     }
-                    if ui.button("Load").clicked() {
+                    if ui.button("Open").clicked() {
                         self.file_interaction = FileInteraction::Load;
                         self.file_dialog.pick_file();
                     }
@@ -235,7 +282,7 @@ impl eframe::App for App {
 
         self.file_dialog.update(ctx);
         'file_loading: {
-            if let Some(path) = self.file_dialog.take_picked() {
+            if let Some(mut path) = self.file_dialog.take_picked() {
                 match core::mem::replace(&mut self.file_interaction, FileInteraction::None) {
                     FileInteraction::None => {}
                     FileInteraction::Save => {
@@ -246,7 +293,11 @@ impl eframe::App for App {
                             states: self.states.as_slice().into(),
                         })
                         .unwrap();
-                        _ = std::fs::write(path, save_string);
+                        if path.extension().is_none() {
+                            path.set_extension("orbit");
+                        }
+                        _ = std::fs::write(&path, save_string);
+                        self.save_path = Some(path);
                     }
                     FileInteraction::Load => {
                         let Ok(string) = std::fs::read_to_string(path) else {
@@ -734,6 +785,15 @@ impl eframe::App for App {
         })
         .unwrap();
         storage.set_string("Save", save_string);
+
+        let save_path = if let Some(save_path) = &self.save_path
+            && let Some(save_path) = save_path.to_str()
+        {
+            save_path.to_string()
+        } else {
+            String::new()
+        };
+        storage.set_string("SavePath", save_path);
     }
 }
 
