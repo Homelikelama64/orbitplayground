@@ -1,11 +1,21 @@
 use crate::{body::BodyList, drawing::DrawHandler};
 use cgmath::InnerSpace;
-use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct Universe {
     pub bodies: BodyList,
     pub gravity: f64,
+    pub changed: bool,
+}
+
+impl Clone for Universe {
+    fn clone(&self) -> Self {
+        Self {
+            bodies: self.bodies.clone(),
+            gravity: self.gravity,
+            changed: false,
+        }
+    }
 }
 
 impl Universe {
@@ -13,6 +23,7 @@ impl Universe {
         Self {
             bodies: BodyList::new(),
             gravity,
+            changed: true,
         }
     }
 

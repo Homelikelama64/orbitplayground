@@ -5,6 +5,7 @@ use crate::{
     camera::Camera,
     drawing::DrawHandler,
     rendering::{GpuCamera, RenderData, RenderState},
+    save::Save,
     universe::Universe,
 };
 use cgmath::{InnerSpace, Vector2, Vector3, Zero};
@@ -17,6 +18,7 @@ pub mod body;
 pub mod camera;
 pub mod drawing;
 pub mod rendering;
+pub mod save;
 pub mod universe;
 
 struct App {
@@ -95,14 +97,7 @@ impl App {
             },
         });
 
-        if let Some(universe) = cc
-            .storage
-            .unwrap()
-            .get_string("Universe")
-            .and_then(|s| serde_json::from_str(&s).ok())
-        {
-            inital_universe = universe;
-        }
+        let mut states = vec![inital_universe].into();
 
         let mut camera = Camera {
             pos: Vector2 { x: 0.0, y: 0.0 },
@@ -111,22 +106,29 @@ impl App {
             width: 0.0,
             height: 0.0,
         };
-        if let Some(loaded_camera) = cc
+        let mut current_state = 0;
+        let mut step_size = 1.0 / 512.0;
+
+        if let Some(save) = cc
             .storage
             .unwrap()
-            .get_string("Camera")
+            .get_string("Save")
             .and_then(|s| serde_json::from_str(&s).ok())
         {
-            camera = loaded_camera;
+            Save {
+                current_state,
+                step_size,
+                camera,
+                states,
+            } = save;
         }
 
-        let gen_future = 20000;
-        let step_size = 1.0 / 512.0;
+        let gen_future = 20000usize;
         let thread_state = Arc::new(ThreadState {
             generation_state: Mutex::new(GenerationState {
-                initial_state: Some(inital_universe.clone()),
+                initial_state: Some(states.last().unwrap().clone()),
                 new_states: vec![],
-                states_buffer_size: gen_future,
+                states_buffer_size: gen_future.saturating_sub(states.len() - current_state),
                 step_size,
             }),
             wakeup: Condvar::new(),
@@ -172,8 +174,8 @@ impl App {
         Ok(Self {
             camera,
             last_time: None,
-            states: vec![inital_universe],
-            current_state: 0,
+            states: states.into_owned(),
+            current_state,
             gen_future,
             step_size,
             thread_state,
@@ -553,8 +555,10 @@ impl eframe::App for App {
                 {
                     let mut lock = self.thread_state.generation_state.lock().unwrap();
                     if current_state_modified {
+                        self.states[self.current_state].changed = true;
                         self.states.truncate(self.current_state + 1);
                         self.states.shrink_to_fit();
+                        lock.step_size = self.step_size;
                         lock.states_buffer_size = self
                             .gen_future
                             .saturating_sub((self.states.len()) - self.current_state);
@@ -658,11 +662,14 @@ impl eframe::App for App {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        storage.set_string(
-            "Universe",
-            serde_json::to_string(&self.states[self.current_state]).unwrap(),
-        );
-        storage.set_string("Camera", serde_json::to_string(&self.camera).unwrap());
+        let save_string = serde_json::to_string(&Save {
+            current_state: self.current_state,
+            step_size: self.step_size,
+            camera: self.camera,
+            states: self.states.as_slice().into(),
+        })
+        .unwrap();
+        storage.set_string("Save", save_string);
     }
 }
 
