@@ -1,7 +1,7 @@
 use crate::{
     drawing::DrawHandler,
     rendering::{GpuCamera, RenderData, RenderState},
-    universe::Universe,
+    world::World,
 };
 use cgmath::{Vector2, Zero};
 use eframe::{
@@ -9,7 +9,7 @@ use eframe::{
     wgpu,
 };
 use egui_file_dialog::FileDialog;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
 
 pub mod body;
 pub mod camera;
@@ -17,6 +17,7 @@ pub mod drawing;
 pub mod rendering;
 pub mod save;
 pub mod universe;
+pub mod world;
 
 struct App {
     last_time: Option<std::time::Instant>,
@@ -25,24 +26,14 @@ struct App {
     file_dialog: FileDialog,
     file_interaction: FileInteraction,
     help_open: bool,
+    worlds: Vec<World>,
+    selected_world: usize,
 }
 
 enum FileInteraction {
     None,
     Save,
     Load,
-}
-
-struct ThreadState {
-    generation_state: Mutex<GenerationState>,
-    wakeup: Condvar,
-}
-
-struct GenerationState {
-    initial_state: Option<Universe>,
-    new_states: Vec<Universe>,
-    states_buffer_size: usize,
-    step_size: f64,
 }
 
 impl App {
@@ -62,7 +53,13 @@ impl App {
                 .default_save_extension("Orbit Save"),
             file_interaction: FileInteraction::None,
             help_open: true,
+            worlds: vec![World::new(1.0 / 512.0)],
+            selected_world: 0,
         })
+    }
+    fn world(&mut self) -> &mut World {
+        self.selected_world = self.selected_world.min(self.worlds.len() - 1);
+        &mut self.worlds[self.selected_world]
     }
 }
 
@@ -73,7 +70,6 @@ impl eframe::App for App {
         self.last_time = Some(time);
 
         let dt = dt.as_secs_f64();
-        let mut _current_state_modified = false;
 
         egui::TopBottomPanel::top("Menu").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -95,6 +91,25 @@ impl eframe::App for App {
 
                 self.help_open |= ui.button("Help").clicked();
             });
+            ui.horizontal(|ui| {
+                ui.label("Open Worlds: ");
+                let mut remove = None;
+                for (i, world) in self.worlds.iter().enumerate() {
+                    let tab = ui.selectable_label(i == self.selected_world, world.name.as_str());
+                    if tab.clicked() {
+                        self.selected_world = i
+                    }
+                    if tab.clicked_by(egui::PointerButton::Middle) || ui.button("-").clicked() {
+                        remove = Some(i)
+                    }
+                }
+                if let Some(remove) = remove {
+                    self.worlds.remove(remove);
+                }
+                if ui.button("+").clicked() {
+                    self.worlds.push(World::new(1.0 / 512.0));
+                }
+            })
         });
 
         self.file_dialog.update(ctx);
@@ -138,22 +153,36 @@ impl eframe::App for App {
                 );
             });
 
+        if self.worlds.is_empty() {
+            self.worlds.push(World::new(1.0 / 512.0));
+        }
+
+        self.world().ui(ctx, dt);
+
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(50, 50, 50)))
             .show(ctx, |ui| {
-                let (rect, _response) =
+                let (rect, response) =
                     ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
                 let aspect = rect.width() / rect.height();
 
-                let d = DrawHandler::new();
+                self.world().world_input(&response, rect, ui);
+                self.world().move_time(dt);
+                self.world().gen_future();
+
+                let mut d = DrawHandler::new();
+
+                self.world().draw_states(&mut d);
 
                 ui.painter()
                     .add(eframe::egui_wgpu::Callback::new_paint_callback(
                         rect,
                         RenderData {
                             camera: GpuCamera {
-                                position: Vector2::zero(),
-                                vertical_height: 1.0,
+                                position: (self.world().camera.pos - self.world().camera.offset)
+                                    .cast()
+                                    .unwrap(),
+                                vertical_height: self.world().camera.view_height as f32,
                                 aspect,
                             },
                             quads: d.quads,
@@ -165,8 +194,7 @@ impl eframe::App for App {
         ctx.request_repaint();
     }
 
-    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
-    }
+    fn save(&mut self, _storage: &mut dyn eframe::Storage) {}
 }
 
 fn main() -> eframe::Result<()> {
