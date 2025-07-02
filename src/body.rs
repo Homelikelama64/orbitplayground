@@ -1,6 +1,6 @@
 use cgmath::*;
 use serde::{Deserialize, Serialize};
-use std::{f64::consts::PI, num::NonZeroUsize};
+use std::{f64::consts::PI, num::NonZeroUsize, ptr::NonNull};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Body {
@@ -92,6 +92,35 @@ impl BodyList {
             Ok(index) => Some(&mut self.bodies[index].1),
             Err(_) => None,
         }
+    }
+
+    pub fn get_disjoint_mut<const N: usize>(&mut self, ids: [BodyId; N]) -> [Option<&mut Body>; N] {
+        self.maybe_get_disjoint_mut(ids.map(Some))
+    }
+
+    pub fn maybe_get_disjoint_mut<const N: usize>(
+        &mut self,
+        ids: [Option<BodyId>; N],
+    ) -> [Option<&mut Body>; N] {
+        let base_ptr = self.bodies.as_mut_ptr();
+        let mut ptrs = ids.map(|id| {
+            id.and_then(
+                |id| match self.bodies.binary_search_by_key(&id, |&(id, _)| id) {
+                    Ok(index) => unsafe {
+                        Some(NonNull::new_unchecked(&raw mut (*base_ptr.add(index)).1))
+                    },
+                    Err(_) => None,
+                },
+            )
+        });
+        for i in 1..ptrs.len() {
+            for j in 0..i {
+                if ptrs[i] == ptrs[j] {
+                    ptrs[i] = None;
+                }
+            }
+        }
+        unsafe { ptrs.map(|ptr| ptr.map(|mut ptr| ptr.as_mut())) }
     }
 
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (BodyId, &Body)> {

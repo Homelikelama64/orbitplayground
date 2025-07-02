@@ -45,6 +45,7 @@ struct App {
     file_interaction: FileInteraction,
     save_path: Option<PathBuf>,
     help_open: bool,
+    auto_orbit: bool,
 }
 
 enum FileInteraction {
@@ -220,6 +221,7 @@ impl App {
             file_interaction: FileInteraction::None,
             save_path,
             help_open: true,
+            auto_orbit: false,
         })
     }
 }
@@ -426,9 +428,10 @@ impl eframe::App for App {
                 .id("Selected Body".into())
                 .open(&mut open)
                 .show(ctx, |ui| {
-                    let Some(body) = self.selected.and_then(|selected| {
-                        self.states[self.current_state].bodies.get_mut(selected)
-                    }) else {
+                    let [selected, focused] = self.states[self.current_state]
+                        .bodies
+                        .maybe_get_disjoint_mut([self.selected, self.focused]);
+                    let Some(body) = selected else {
                         ui.label("The selected body does not exist in this time :p");
                         return;
                     };
@@ -513,6 +516,30 @@ impl eframe::App for App {
                         if ui.button("Delete").clicked() {
                             current_state_modified = true;
                             delete = true;
+                        }
+                        ui.checkbox(&mut self.auto_orbit, "Auto Orbit");
+                        if self.focused.is_none() && self.auto_orbit && !self.playing {
+                            ui.label("Focus a body for auto orbit");
+                        }
+                        if let Some(focus) = focused
+                            && self.auto_orbit
+                            && !self.playing
+                        {
+                            let focused_to_body = body.pos - focus.pos;
+                            let mut current_height = focused_to_body.magnitude();
+                            ui.horizontal(|ui| {
+                                ui.label("Current Height:");
+                                if ui
+                                    .add(egui::DragValue::new(&mut current_height).speed(0.1))
+                                    .changed()
+                                {
+                                    let new_focused_to_body =
+                                        focused_to_body.normalize_to(current_height);
+                                    body.pos = new_focused_to_body + focus.pos;
+                                    current_state_modified = true;
+                                }
+                            });
+                            ui.label("Not Finished");
                         }
                     });
                     if delete {
