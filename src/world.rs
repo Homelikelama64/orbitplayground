@@ -555,6 +555,9 @@ impl World {
                     self.states[self.current_state].bodies.remove(selected);
                     self.current_state_modified = true
                 }
+                if i.key_pressed(egui::Key::N) {
+                    self.new_body(self.camera.pos);
+                }
             });
         }
         if !ctx.wants_pointer_input() {
@@ -592,59 +595,72 @@ impl World {
         let world_mouse_pos = self.camera.screen_to_world(mouse_pos);
 
         if response.clicked_by(egui::PointerButton::Secondary) {
-            let mut clicked_on_body = false;
-            self.states[self.current_state]
-                .bodies
-                .iter()
-                .for_each(|(key, body)| {
-                    let mouse_to_body = body.pos - world_mouse_pos;
-                    if mouse_to_body.magnitude() < body.radius {
-                        if let Some(_focused) = self.focused {
-                            self.camera.pos -= self.camera.offset
-                        }
-                        self.focused = Some(key);
-                        self.camera.pos -= body.pos;
-                        self.camera.offset = -body.pos;
-                        clicked_on_body = true
-                    }
-                });
-            self.focused = if !clicked_on_body && let Some(_) = self.focused {
-                self.camera.pos -= self.camera.offset;
-                self.camera.offset = Vector2::zero();
-                None
-            } else {
-                self.focused
-            }
+            self.attempt_focus(world_mouse_pos);
         }
 
         if response.clicked() {
-            self.states[self.current_state]
-                .bodies
-                .iter()
-                .for_each(|(key, body)| {
-                    let mouse_to_body = body.pos - world_mouse_pos;
-                    if mouse_to_body.magnitude() < body.radius {
-                        self.selected = Some(key);
-                    }
-                });
+            self.attempt_select(world_mouse_pos);
         }
 
         if response.clicked_by(egui::PointerButton::Middle) && !self.playing {
-            self.current_state_modified = true;
-            let new_body = self.states[self.current_state].bodies.push(Body {
-                name: "Unnamed".into(),
-                pos: world_mouse_pos,
-                vel: Vector2::zero(),
-                radius: 1.0,
-                density: 1.0,
-                color: Vector3 {
-                    x: 1.0,
-                    y: 1.0,
-                    z: 1.0,
-                },
-            });
-            self.selected = Some(new_body)
+            self.new_body(world_mouse_pos);
         }
+
+    }
+
+    fn attempt_select(&mut self, pos: Vector2<f64>) {
+        self.states[self.current_state]
+            .bodies
+            .iter()
+            .for_each(|(key, body)| {
+                let mouse_to_body = body.pos - pos;
+                if mouse_to_body.magnitude() < body.radius {
+                    self.selected = Some(key);
+                }
+            });
+    }
+
+    fn attempt_focus(&mut self, pos: Vector2<f64>) {
+        let mut clicked_on_body = false;
+        self.states[self.current_state]
+            .bodies
+            .iter()
+            .for_each(|(key, body)| {
+                let mouse_to_body = body.pos - pos;
+                if mouse_to_body.magnitude() < body.radius {
+                    if let Some(_focused) = self.focused {
+                        self.camera.pos -= self.camera.offset
+                    }
+                    self.focused = Some(key);
+                    self.camera.pos -= body.pos;
+                    self.camera.offset = -body.pos;
+                    clicked_on_body = true
+                }
+            });
+        self.focused = if !clicked_on_body && let Some(_) = self.focused {
+            self.camera.pos -= self.camera.offset;
+            self.camera.offset = Vector2::zero();
+            None
+        } else {
+            self.focused
+        }
+    }
+
+    fn new_body(&mut self, pos: Vector2<f64>) {
+        self.current_state_modified = true;
+        let new_body = self.states[self.current_state].bodies.push(Body {
+            name: "Unnamed".into(),
+            pos: pos,
+            vel: Vector2::zero(),
+            radius: 1.0,
+            density: 1.0,
+            color: Vector3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+        });
+        self.selected = Some(new_body)
     }
 
     pub fn move_time(&mut self, dt: f64) {
