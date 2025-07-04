@@ -2,6 +2,7 @@ use crate::{
     body::{Body, BodyId},
     camera::Camera,
     drawing::DrawHandler,
+    save::{Data, Save},
     universe::Universe,
 };
 use cgmath::{InnerSpace, Vector2, Vector3, Zero};
@@ -36,7 +37,9 @@ pub struct World {
     pub selected: Option<BodyId>,
     pub current_state_modified: bool,
     pub auto_orbit: bool,
-    pub accumulated_time: f64
+    pub accumulated_time: f64,
+    pub save_path: Option<String>,
+    pub modified_since_save_to_file: bool,
 }
 
 impl World {
@@ -74,11 +77,71 @@ impl World {
             current_state_modified: false,
             auto_orbit: false,
             accumulated_time: 0.0,
+            save_path: None,
+            modified_since_save_to_file: true,
         }
     }
+
     pub fn state(&self) -> &Universe {
         &self.states[self.current_state]
     }
+
+    pub fn from_save(save: Save) -> World {
+        let states: Vec<Universe> = save.states.into();
+
+        let gen_future = 20000usize;
+        let thread_state = Arc::new(ThreadState {
+            generation_state: Mutex::new(GenerationState {
+                initial_state: Some(states.last().unwrap().clone()),
+                new_states: vec![],
+                states_buffer_size: gen_future
+                    .saturating_sub(states.len() - save.data.current_state),
+                step_size: save.data.step_size,
+            }),
+            wakeup: Condvar::new(),
+        });
+
+        Self::spawn_update_thread(thread_state.clone());
+
+        Self {
+            name: save.data.name.clone(),
+            camera: save.data.camera,
+            states,
+            gen_future,
+            show_future: save.data.show_future,
+            path_quality: save.data.path_quality,
+            current_state: save.data.current_state,
+            thread_state,
+            step_size: save.data.step_size,
+            speed: save.data.speed,
+            playing: false,
+            focused: None,
+            selected: None,
+            current_state_modified: false,
+            auto_orbit: false,
+            accumulated_time: 0.0,
+            save_path: save.data.save_path,
+            modified_since_save_to_file: false,
+        }
+    }
+
+    pub fn to_save(&self) -> Save {
+        Save {
+            data: Data {
+                name: self.name.clone(),
+                camera: self.camera,
+                gen_future: self.gen_future,
+                show_future: self.show_future,
+                path_quality: self.path_quality,
+                current_state: self.current_state,
+                step_size: self.step_size,
+                speed: self.speed,
+                save_path: self.save_path.clone(),
+            },
+            states: self.states.as_slice().into(),
+        }
+    }
+
     fn spawn_update_thread(thread_state: Arc<ThreadState>) {
         std::thread::spawn(move || {
             let mut state: Option<Universe> = None;
@@ -114,6 +177,7 @@ impl World {
             }
         });
     }
+
     pub fn ui(&mut self, ctx: &egui::Context, dt: f64) {
         self.current_state_modified = false;
         egui::TopBottomPanel::bottom("Time").show(ctx, |ui| {
@@ -145,49 +209,72 @@ impl World {
                     .add(egui::DragValue::new(&mut seconds).suffix("s").speed(1.0))
                     .changed()
                 {
+                    self.modified_since_save_to_file = true;
                     self.gen_future = (seconds / self.step_size) as usize;
                 }
             });
             ui.horizontal(|ui| {
                 ui.label("Show Future: ");
                 ui.spacing_mut().slider_width = ui.available_width() - 75.0;
-                ui.add(
-                    egui::Slider::new(&mut self.show_future, 0.0..=10000.0)
-                        .suffix("s")
-                        .step_by(1.0),
-                );
+                if ui
+                    .add(
+                        egui::Slider::new(&mut self.show_future, 0.0..=10000.0)
+                            .suffix("s")
+                            .step_by(1.0),
+                    )
+                    .changed()
+                {
+                    self.modified_since_save_to_file = true;
+                }
                 ui.spacing_mut().slider_width = default_slider_width;
             });
             ui.horizontal(|ui| {
                 ui.label("Path Quality: ");
-                ui.add(egui::Slider::new(&mut self.path_quality, 1..=128));
+                if ui
+                    .add(egui::Slider::new(&mut self.path_quality, 1..=128))
+                    .changed()
+                {
+                    self.modified_since_save_to_file = true;
+                };
             });
             ui.horizontal(|ui| {
                 ui.label("Speed: ");
-                ui.add(egui::DragValue::new(&mut self.speed).speed(0.1));
+                if ui
+                    .add(egui::DragValue::new(&mut self.speed).speed(0.1))
+                    .changed()
+                {
+                    self.modified_since_save_to_file = true;
+                }
                 if ui.button("Play / Pause").clicked() {
-                    self.playing = !self.playing
+                    self.playing = !self.playing;
                 }
                 if ui.button("0.1x").clicked() {
-                    self.speed = 0.1
+                    self.speed = 0.1;
+                    self.modified_since_save_to_file = true;
                 }
                 if ui.button("0.5x").clicked() {
-                    self.speed = 0.5
+                    self.speed = 0.5;
+                    self.modified_since_save_to_file = true;
                 }
                 if ui.button("1x").clicked() {
-                    self.speed = 1.0
+                    self.speed = 1.0;
+                    self.modified_since_save_to_file = true;
                 }
                 if ui.button("5x").clicked() {
-                    self.speed = 5.0
+                    self.speed = 5.0;
+                    self.modified_since_save_to_file = true;
                 }
                 if ui.button("10x").clicked() {
-                    self.speed = 10.0
+                    self.speed = 10.0;
+                    self.modified_since_save_to_file = true;
                 }
                 if ui.button("50x").clicked() {
-                    self.speed = 50.0
+                    self.speed = 50.0;
+                    self.modified_since_save_to_file = true;
                 }
                 if ui.button("100x").clicked() {
-                    self.speed = 100.0
+                    self.speed = 100.0;
+                    self.modified_since_save_to_file = true;
                 }
                 self.speed = self.speed.max(0.0)
             });
@@ -195,9 +282,11 @@ impl World {
                 self.states.drain(..self.current_state);
                 self.current_state = 0;
                 self.states.shrink_to_fit();
+                self.modified_since_save_to_file = true;
             }
             if ui.button("Delete Future").clicked() {
                 self.current_state_modified = true;
+                self.modified_since_save_to_file = true;
             }
         });
 
@@ -376,6 +465,7 @@ impl World {
                 self.camera.view_height = self.camera.view_height.max(0.1);
             });
         }
+        self.modified_since_save_to_file |= self.current_state_modified;
     }
 
     pub fn world_input(&mut self, response: &egui::Response, rect: egui::Rect, ui: &mut egui::Ui) {
@@ -493,7 +583,8 @@ impl World {
     pub fn draw_states(&self, d: &mut DrawHandler) {
         self.state().draw(d);
         d.quads.reserve(
-            ((self.show_future / self.step_size) as usize).min((self.states.len() as i32 - 2 as i32).max(0) as usize)
+            ((self.show_future / self.step_size) as usize)
+                .min((self.states.len() as i32 - 2_i32).max(0) as usize)
                 * self.state().bodies.len()
                 / self.path_quality,
         );

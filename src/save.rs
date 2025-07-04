@@ -6,11 +6,22 @@ use crate::{
 use serde::{Deserialize, Serialize, ser::SerializeStruct};
 use std::{borrow::Cow, collections::BTreeMap};
 
-#[derive(Debug)]
-pub struct Save<'a> {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Data {
+    pub name: String,
+    pub camera: Camera,
+    pub gen_future: usize,
+    pub show_future: f64,
+    pub path_quality: usize,
     pub current_state: usize,
     pub step_size: f64,
-    pub camera: Camera,
+    pub speed: f64,
+    pub save_path: Option<String>
+}
+
+#[derive(Debug)]
+pub struct Save<'a> {
+    pub data: Data,
     pub states: Cow<'a, [Universe]>,
 }
 
@@ -19,10 +30,8 @@ impl Serialize for Save<'_> {
     where
         S: serde::Serializer,
     {
-        let mut s = serializer.serialize_struct("Save", 4)?;
-        s.serialize_field("current_state", &self.current_state)?;
-        s.serialize_field("step_size", &self.step_size)?;
-        s.serialize_field("camera", &self.camera)?;
+        let mut s = serializer.serialize_struct("Save", 2)?;
+        s.serialize_field("data", &self.data)?;
 
         struct BodyListSerialiser<'a> {
             body_list: &'a BodyList,
@@ -71,7 +80,7 @@ impl Serialize for Save<'_> {
                 ))
             }
         }
-
+        
         assert!(self.states[0].changed);
         s.serialize_field(
             "states",
@@ -100,16 +109,17 @@ impl<'de> Deserialize<'de> for Save<'_> {
         #[derive(Deserialize)]
         #[serde(rename = "Save")]
         struct SaveImpl {
-            current_state: usize,
-            step_size: f64,
-            camera: Camera,
+            data: Data,
             states: Vec<UniverseImpl>,
         }
 
         let SaveImpl {
-            current_state,
-            step_size,
-            camera,
+            data:
+                data @ Data {
+                    current_state,
+                    step_size,
+                    ..
+                },
             states,
         } = SaveImpl::deserialize(deserializer)?;
         assert_eq!(states[0].index, 0);
@@ -145,9 +155,7 @@ impl<'de> Deserialize<'de> for Save<'_> {
         }
 
         Ok(Save {
-            current_state,
-            step_size,
-            camera,
+            data,
             states: result_states.into(),
         })
     }
