@@ -681,6 +681,17 @@ impl World {
 
     pub fn draw_states(&self, d: &mut DrawHandler) {
         self.state().draw(d);
+        if let Some(selected) = self.selected
+            && let Some(selected) = self.state().bodies.get(selected)
+        {
+            d.circle(
+                selected.pos.cast().unwrap(),
+                selected.radius as f32 * 1.3,
+                selected.color.cast().unwrap() * 2.0,
+                0.05,
+            );
+        }
+
         d.quads.reserve(
             ((self.show_future / self.step_size) as usize)
                 .min((self.states.len() as i32 - 2_i32).max(0) as usize)
@@ -777,7 +788,7 @@ impl World {
                 break;
             }
             let universe = &self.states[old_index];
-            let new_universe = &self.states[past_index + 1];
+            let new_universe = &self.states[past_index - 1];
             if (i + self.current_state) % self.path_quality == 0 {
                 universe.bodies.iter().for_each(|(id, _)| {
                     let Some(current) = universe.bodies.get(id) else {
