@@ -11,14 +11,23 @@ pub struct Camera {
 }
 
 impl Camera {
+    pub fn new(pos: Vector2<f64>, offset: Vector2<f64>, view_height: f64) -> Camera {
+        Self {
+            pos,
+            offset,
+            view_height,
+            width: 0.0,
+            height: 0.0,
+        }
+    }
+
     pub fn screen_to_world(&self, pos: Vector2<f64>) -> Vector2<f64> {
         Vector2 {
             x: (pos.x - self.width * 0.5) / self.width
                 * (self.view_height * (self.width / self.height))
                 + self.pos.x
                 - self.offset.x,
-            y: -(pos.y - self.height * 0.5) / self.height * self.view_height
-                + self.pos.y
+            y: -(pos.y - self.height * 0.5) / self.height * self.view_height + self.pos.y
                 - self.offset.y,
         }
     }
