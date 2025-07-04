@@ -27,6 +27,7 @@ pub struct World {
     pub states: Vec<Universe>,
     pub gen_future: usize,
     pub show_future: f64,
+    pub show_past: f64,
     pub path_quality: usize,
     pub current_state: usize,
     pub thread_state: Arc<ThreadState>,
@@ -66,6 +67,7 @@ impl World {
             states,
             gen_future,
             show_future: 100.0,
+            show_past: 100.0,
             path_quality: 128,
             current_state,
             thread_state,
@@ -109,6 +111,7 @@ impl World {
             states,
             gen_future,
             show_future: save.data.show_future,
+            show_past: save.data.show_past,
             path_quality: save.data.path_quality,
             current_state: save.data.current_state,
             thread_state,
@@ -132,6 +135,7 @@ impl World {
                 camera: self.camera,
                 gen_future: self.gen_future,
                 show_future: self.show_future,
+                show_past: self.show_past,
                 path_quality: self.path_quality,
                 current_state: self.current_state,
                 step_size: self.step_size,
@@ -186,70 +190,107 @@ impl World {
             });
             ui.add(egui::Separator::default().horizontal());
             //ui.group(|ui| {
-                egui::Grid::new("Time")
-                    .num_columns(2)
-                    .spacing([30.0, 2.0])
-                    .show(ui, |ui| {
-                        ui.group(|ui| {
-                            ui.label("Time:");
-                            let mut seconds = self.current_state as f64 * self.step_size;
-                            if ui
-                                .add(egui::DragValue::new(&mut seconds).suffix("s").speed(1.0))
-                                .changed()
-                            {
-                                self.current_state = (seconds / self.step_size) as usize;
-                            }
-                            ui.label(format!(
-                                " /  {:.2}s",
-                                self.states.len() as f64 * self.step_size
-                            ));
-                        });
-                        ui.group(|ui| {
-                            ui.spacing_mut().slider_width = ui.available_width() - 50.0;
-                            ui.add(egui::Slider::new(
-                                &mut self.current_state,
-                                0..=self.states.len() - 1,
-                            ).suffix("t"));
-                        });
-                        ui.end_row();
-
-                        let mut changed = false;
-                        let mut seconds = self.gen_future as f64 * self.step_size;
-                        ui.group(|ui| {
-                            ui.label("Gen Future: ");
-                            let drag_value =
-                                ui.add(egui::DragValue::new(&mut seconds).suffix("s").speed(1.0));
-                            changed |= drag_value.changed()
-                        });
-                        ui.group(|ui| {
-                            ui.spacing_mut().slider_width = ui.available_width() - 50.0;
-                            let slider = ui.add(egui::Slider::new(&mut seconds, 0.0..=10000.0).suffix("s"));
-                            changed |= slider.changed()
-                        });
-                        if changed {
-                            self.modified_since_save_to_file = true;
-                            self.gen_future = (seconds / self.step_size) as usize;
+            egui::Grid::new("Time")
+                .num_columns(2)
+                .spacing([30.0, 2.0])
+                .show(ui, |ui| {
+                    ui.group(|ui| {
+                        ui.label("Time:");
+                        let mut seconds = self.current_state as f64 * self.step_size;
+                        if ui
+                            .add(egui::DragValue::new(&mut seconds).suffix("s").speed(1.0))
+                            .changed()
+                        {
+                            self.current_state = (seconds / self.step_size) as usize;
                         }
-                        ui.end_row();
-
-                        ui.group(|ui| {
-                            ui.label("Show Future: ");
-                            ui.add(egui::DragValue::new(&mut self.show_future).suffix("s"))
-                        });
-                        ui.group(|ui| {
-                            ui.spacing_mut().slider_width = ui.available_width() - 50.0;
-                            if ui
-                                .add(
-                                    egui::Slider::new(&mut self.show_future, 0.0..=10000.0)
-                                        .suffix("s")
-                                        .step_by(1.0),
-                                )
-                                .changed()
-                            {
-                                self.modified_since_save_to_file = true;
-                            }
-                        });
+                        ui.label(format!(
+                            " /  {:.2}s",
+                            self.states.len() as f64 * self.step_size
+                        ));
                     });
+                    ui.group(|ui| {
+                        ui.spacing_mut().slider_width = ui.available_width() - 75.0;
+                        ui.add(
+                            egui::Slider::new(&mut self.current_state, 0..=self.states.len() - 1)
+                                .suffix("t"),
+                        );
+                    });
+                    ui.end_row();
+
+                    let mut changed = false;
+                    let mut seconds = self.gen_future as f64 * self.step_size;
+                    ui.group(|ui| {
+                        ui.label("Gen Future: ");
+                        let drag_value =
+                            ui.add(egui::DragValue::new(&mut seconds).suffix("s").speed(1.0));
+                        changed |= drag_value.changed()
+                    });
+                    ui.group(|ui| {
+                        let mut gen_to = self.current_state + (seconds / self.step_size) as usize;
+                        ui.spacing_mut().slider_width = ui.available_width() - 75.0;
+                        let slider = ui.add(
+                            egui::Slider::new(&mut gen_to, 0..=self.states.len() - 1).suffix("t"),
+                        );
+                        if slider.changed() {
+                            seconds =
+                                (gen_to.saturating_sub(self.current_state)) as f64 * self.step_size;
+                            changed |= true;
+                        }
+                    });
+                    if changed {
+                        self.modified_since_save_to_file = true;
+                        self.gen_future = (seconds / self.step_size) as usize;
+                    }
+                    ui.end_row();
+
+                    ui.group(|ui| {
+                        ui.label("Show Future: ");
+                        ui.add(egui::DragValue::new(&mut self.show_future).suffix("s"))
+                    });
+                    ui.group(|ui| {
+                        let mut show_to =
+                            (self.show_future / self.step_size) as usize + self.current_state;
+                        ui.spacing_mut().slider_width = ui.available_width() - 75.0;
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut show_to, 0..=self.states.len() - 1)
+                                    .suffix("t")
+                                    .step_by(1.0),
+                            )
+                            .changed()
+                        {
+                            self.show_future = (show_to.saturating_sub(self.current_state)) as f64
+                                * self.step_size;
+                            self.modified_since_save_to_file = true;
+                        }
+                    });
+                    self.show_future = self.show_future.max(0.0);
+                    ui.end_row();
+
+                    ui.group(|ui| {
+                        ui.label("Show Past: ");
+                        ui.add(egui::DragValue::new(&mut self.show_past).suffix("s"))
+                    });
+                    ui.group(|ui| {
+                        let mut show_back = self
+                            .current_state
+                            .saturating_sub((self.show_past / self.step_size) as usize);
+                        ui.spacing_mut().slider_width = ui.available_width() - 75.0;
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut show_back, 0..=self.states.len() - 1)
+                                    .suffix("t")
+                                    .step_by(1.0),
+                            )
+                            .changed()
+                        {
+                            self.show_past = self.current_state.saturating_sub(show_back) as f64
+                                * self.step_size;
+                            self.modified_since_save_to_file = true;
+                        }
+                    });
+                    self.show_past = self.show_past.max(0.0);
+                });
             //});
             ui.add(egui::Separator::default());
             ui.horizontal(|ui| {
@@ -272,7 +313,10 @@ impl World {
                     {
                         self.modified_since_save_to_file = true;
                     }
-                    if ui.button("Play / Pause").clicked() {
+                    if ui
+                        .button(if self.playing { "Pause" } else { "Play" })
+                        .clicked()
+                    {
                         self.playing = !self.playing;
                     }
                     ui.add(egui::Separator::default().vertical());
@@ -699,10 +743,73 @@ impl World {
                         (future.pos - future_offset).cast().unwrap(),
                         0.005 * self.camera.view_height as f32,
                         current.color.cast().unwrap(),
-                        0.1,
+                        0.0,
                     );
                 });
                 old_index = future_index
+            }
+        }
+        // Show Past
+        let mut old_index = self.current_state;
+        for i in 0..(self.show_past / self.step_size) as usize {
+            let past_index = self.current_state - i;
+            if past_index == 0 {
+                let universe = &self.states[0];
+                universe.bodies.iter().for_each(|(_, body)| {
+                    let offset = if let Some(focused) = self.focused
+                        && let Some(body) = universe.bodies.get(focused)
+                    {
+                        body.pos + self.camera.offset
+                    } else {
+                        self.camera.offset
+                    };
+                    d.circle(
+                        (body.pos - offset).cast().unwrap(),
+                        0.005 * self.camera.view_height as f32,
+                        Vector3 {
+                            x: 0.75,
+                            y: 0.75,
+                            z: 0.75,
+                        },
+                        0.1,
+                    );
+                });
+                break;
+            }
+            let universe = &self.states[old_index];
+            let new_universe = &self.states[past_index + 1];
+            if (i + self.current_state) % self.path_quality == 0 {
+                universe.bodies.iter().for_each(|(id, _)| {
+                    let Some(current) = universe.bodies.get(id) else {
+                        return;
+                    };
+                    let Some(future) = new_universe.bodies.get(id) else {
+                        return;
+                    };
+                    let current_offset = if let Some(focused) = self.focused
+                        && let Some(body) = universe.bodies.get(focused)
+                    {
+                        body.pos + self.camera.offset
+                    } else {
+                        self.camera.offset
+                    };
+                    let future_offset = if let Some(focused) = self.focused
+                        && let Some(body) = new_universe.bodies.get(focused)
+                    {
+                        body.pos + self.camera.offset
+                    } else {
+                        self.camera.offset
+                    };
+
+                    d.line(
+                        (current.pos - current_offset).cast().unwrap(),
+                        (future.pos - future_offset).cast().unwrap(),
+                        0.005 * self.camera.view_height as f32,
+                        (current.color * 0.5).cast().unwrap(),
+                        0.0,
+                    );
+                });
+                old_index = past_index
             }
         }
     }

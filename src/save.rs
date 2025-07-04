@@ -12,6 +12,7 @@ pub struct Data {
     pub camera: Camera,
     pub gen_future: usize,
     pub show_future: f64,
+    pub show_past: f64,
     pub path_quality: usize,
     pub current_state: usize,
     pub step_size: f64,

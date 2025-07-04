@@ -47,7 +47,7 @@ impl Universe {
                 body.pos.cast().unwrap(),
                 body.radius as f32,
                 body.color.cast().unwrap(),
-                0.0,
+                0.1,
             );
         });
     }
