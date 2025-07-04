@@ -181,113 +181,168 @@ impl World {
     pub fn ui(&mut self, ctx: &egui::Context, dt: f64) {
         self.current_state_modified = false;
         egui::TopBottomPanel::bottom("Time").show(ctx, |ui| {
-            ui.heading("Time");
-            ui.horizontal(|ui| {
-                let mut seconds = self.current_state as f64 * self.step_size;
-                if ui
-                    .add(egui::DragValue::new(&mut seconds).suffix("s").speed(1.0))
-                    .changed()
-                {
-                    self.current_state = (seconds / self.step_size) as usize;
-                }
-                ui.label(format!(
-                    " /  {:.2}s",
-                    self.states.len() as f64 * self.step_size
-                ));
+            ui.vertical_centered(|ui| {
+                ui.heading("Time");
             });
-            let default_slider_width = ui.spacing_mut().slider_width;
-            ui.spacing_mut().slider_width = ui.available_width() - 75.0;
-            ui.add(egui::Slider::new(
-                &mut self.current_state,
-                0..=self.states.len() - 1,
-            ));
-            ui.spacing_mut().slider_width = default_slider_width;
+            ui.add(egui::Separator::default().horizontal());
+            //ui.group(|ui| {
+                egui::Grid::new("Time")
+                    .num_columns(2)
+                    .spacing([30.0, 2.0])
+                    .show(ui, |ui| {
+                        ui.group(|ui| {
+                            ui.label("Time:");
+                            let mut seconds = self.current_state as f64 * self.step_size;
+                            if ui
+                                .add(egui::DragValue::new(&mut seconds).suffix("s").speed(1.0))
+                                .changed()
+                            {
+                                self.current_state = (seconds / self.step_size) as usize;
+                            }
+                            ui.label(format!(
+                                " /  {:.2}s",
+                                self.states.len() as f64 * self.step_size
+                            ));
+                        });
+                        ui.group(|ui| {
+                            ui.spacing_mut().slider_width = ui.available_width() - 50.0;
+                            ui.add(egui::Slider::new(
+                                &mut self.current_state,
+                                0..=self.states.len() - 1,
+                            ).suffix("t"));
+                        });
+                        ui.end_row();
+
+                        let mut changed = false;
+                        let mut seconds = self.gen_future as f64 * self.step_size;
+                        ui.group(|ui| {
+                            ui.label("Gen Future: ");
+                            let drag_value =
+                                ui.add(egui::DragValue::new(&mut seconds).suffix("s").speed(1.0));
+                            changed |= drag_value.changed()
+                        });
+                        ui.group(|ui| {
+                            ui.spacing_mut().slider_width = ui.available_width() - 50.0;
+                            let slider = ui.add(egui::Slider::new(&mut seconds, 0.0..=10000.0).suffix("s"));
+                            changed |= slider.changed()
+                        });
+                        if changed {
+                            self.modified_since_save_to_file = true;
+                            self.gen_future = (seconds / self.step_size) as usize;
+                        }
+                        ui.end_row();
+
+                        ui.group(|ui| {
+                            ui.label("Show Future: ");
+                            ui.add(egui::DragValue::new(&mut self.show_future).suffix("s"))
+                        });
+                        ui.group(|ui| {
+                            ui.spacing_mut().slider_width = ui.available_width() - 50.0;
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut self.show_future, 0.0..=10000.0)
+                                        .suffix("s")
+                                        .step_by(1.0),
+                                )
+                                .changed()
+                            {
+                                self.modified_since_save_to_file = true;
+                            }
+                        });
+                    });
+            //});
+            ui.add(egui::Separator::default());
             ui.horizontal(|ui| {
-                ui.label("Gen Future: ");
-                let mut seconds = self.gen_future as f64 * self.step_size;
-                if ui
-                    .add(egui::DragValue::new(&mut seconds).suffix("s").speed(1.0))
-                    .changed()
-                {
-                    self.modified_since_save_to_file = true;
-                    self.gen_future = (seconds / self.step_size) as usize;
-                }
+                ui.group(|ui| {
+                    ui.label("Path Quality: ");
+                    if ui
+                        .add(egui::Slider::new(&mut self.path_quality, 1..=128))
+                        .changed()
+                    {
+                        self.modified_since_save_to_file = true;
+                    };
+                });
             });
             ui.horizontal(|ui| {
-                ui.label("Show Future: ");
-                ui.spacing_mut().slider_width = ui.available_width() - 75.0;
-                if ui
-                    .add(
-                        egui::Slider::new(&mut self.show_future, 0.0..=10000.0)
-                            .suffix("s")
-                            .step_by(1.0),
-                    )
-                    .changed()
-                {
-                    self.modified_since_save_to_file = true;
-                }
-                ui.spacing_mut().slider_width = default_slider_width;
-            });
-            ui.horizontal(|ui| {
-                ui.label("Path Quality: ");
-                if ui
-                    .add(egui::Slider::new(&mut self.path_quality, 1..=128))
-                    .changed()
-                {
-                    self.modified_since_save_to_file = true;
-                };
-            });
-            ui.horizontal(|ui| {
-                ui.label("Speed: ");
-                if ui
-                    .add(egui::DragValue::new(&mut self.speed).speed(0.1))
-                    .changed()
-                {
-                    self.modified_since_save_to_file = true;
-                }
-                if ui.button("Play / Pause").clicked() {
-                    self.playing = !self.playing;
-                }
-                if ui.button("0.1x").clicked() {
-                    self.speed = 0.1;
-                    self.modified_since_save_to_file = true;
-                }
-                if ui.button("0.5x").clicked() {
-                    self.speed = 0.5;
-                    self.modified_since_save_to_file = true;
-                }
-                if ui.button("1x").clicked() {
-                    self.speed = 1.0;
-                    self.modified_since_save_to_file = true;
-                }
-                if ui.button("5x").clicked() {
-                    self.speed = 5.0;
-                    self.modified_since_save_to_file = true;
-                }
-                if ui.button("10x").clicked() {
-                    self.speed = 10.0;
-                    self.modified_since_save_to_file = true;
-                }
-                if ui.button("50x").clicked() {
-                    self.speed = 50.0;
-                    self.modified_since_save_to_file = true;
-                }
-                if ui.button("100x").clicked() {
-                    self.speed = 100.0;
-                    self.modified_since_save_to_file = true;
-                }
+                ui.group(|ui| {
+                    ui.label("Speed: ");
+                    if ui
+                        .add(egui::DragValue::new(&mut self.speed).speed(0.1))
+                        .changed()
+                    {
+                        self.modified_since_save_to_file = true;
+                    }
+                    if ui.button("Play / Pause").clicked() {
+                        self.playing = !self.playing;
+                    }
+                    ui.add(egui::Separator::default().vertical());
+                    if ui.selectable_label(self.speed == 0.1, "0.1x").clicked() {
+                        self.speed = 0.1;
+                        self.modified_since_save_to_file = true;
+                    }
+                    ui.add(egui::Separator::default().vertical());
+                    if ui.selectable_label(self.speed == 0.5, "0.5x").clicked() {
+                        self.speed = 0.5;
+                        self.modified_since_save_to_file = true;
+                    }
+                    ui.add(egui::Separator::default().vertical());
+                    if ui.selectable_label(self.speed == 1.0, "1x").clicked() {
+                        self.speed = 1.0;
+                        self.modified_since_save_to_file = true;
+                    }
+                    ui.add(egui::Separator::default().vertical());
+                    if ui.selectable_label(self.speed == 5.0, "5x").clicked() {
+                        self.speed = 5.0;
+                        self.modified_since_save_to_file = true;
+                    }
+                    ui.add(egui::Separator::default().vertical());
+                    if ui.selectable_label(self.speed == 10.0, "10x").clicked() {
+                        self.speed = 10.0;
+                        self.modified_since_save_to_file = true;
+                    }
+                    ui.add(egui::Separator::default().vertical());
+                    if ui.selectable_label(self.speed == 20.0, "20x").clicked() {
+                        self.speed = 20.0;
+                        self.modified_since_save_to_file = true;
+                    }
+                    ui.add(egui::Separator::default().vertical());
+                    if ui.selectable_label(self.speed == 50.0, "50x").clicked() {
+                        self.speed = 50.0;
+                        self.modified_since_save_to_file = true;
+                    }
+                    ui.add(egui::Separator::default().vertical());
+                    if ui.selectable_label(self.speed == 75.0, "75x").clicked() {
+                        self.speed = 75.0;
+                        self.modified_since_save_to_file = true;
+                    }
+                    ui.add(egui::Separator::default().vertical());
+                    if ui.selectable_label(self.speed == 100.0, "100x").clicked() {
+                        self.speed = 100.0;
+                        self.modified_since_save_to_file = true;
+                    }
+                    ui.add(egui::Separator::default().vertical());
+                    if ui.selectable_label(self.speed == 200.0, "200x").clicked() {
+                        self.speed = 200.0;
+                        self.modified_since_save_to_file = true;
+                    }
+                    ui.add(egui::Separator::default().vertical());
+                });
                 self.speed = self.speed.max(0.0)
             });
-            if ui.button("Delete Past").clicked() {
-                self.states.drain(..self.current_state);
-                self.current_state = 0;
-                self.states.shrink_to_fit();
-                self.modified_since_save_to_file = true;
-            }
-            if ui.button("Delete Future").clicked() {
-                self.current_state_modified = true;
-                self.modified_since_save_to_file = true;
-            }
+            ui.horizontal(|ui| {
+                ui.group(|ui| {
+                    if ui.button("Delete Past").clicked() {
+                        self.states.drain(..self.current_state);
+                        self.current_state = 0;
+                        self.states.shrink_to_fit();
+                        self.modified_since_save_to_file = true;
+                    }
+                    if ui.button("Delete Future").clicked() {
+                        self.current_state_modified = true;
+                        self.modified_since_save_to_file = true;
+                    }
+                });
+            });
         });
 
         {
